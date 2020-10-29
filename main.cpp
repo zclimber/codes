@@ -34,13 +34,15 @@ void GenerateMinimalSpanMatrixForwardPass(matrix &gen_matrix, int n, int k) {
 
 void GenerateMinimalSpanMatrixBackwardPass(matrix &gen_matrix, int n, int k) {
     std::vector<unsigned char> found_rows(k);
-    for (int base = n - 1; base >= n - k; base--) {
+    int found_ending_rows = 0;
+    for (int base = n - 1; base >= 0 && found_ending_rows < k; base--) {
         int found_index = -1;
         for (auto i = k - 1; i >= 0 && found_index == -1; i--) {
             if (found_rows[i])
                 continue;
             if (gen_matrix[i][base] == 1) {
                 found_index = i;
+                found_ending_rows++;
                 found_rows[i] = true;
             }
         }
