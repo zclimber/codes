@@ -258,9 +258,9 @@ std::string PrintVector(const std::vector<unsigned char> &data) {
 }
 
 int main() {
-    int n, k;
+    int n, k, words;
     float noise_sigma;
-    std::cin >> n >> k >> noise_sigma;
+    std::cin >> n >> k >> noise_sigma >> words;
     matrix code_gen_matrix(k);
     for (int i = 0; i < k; i++) {
         code_gen_matrix[i].resize(n);
@@ -289,17 +289,17 @@ int main() {
 
     std::vector<unsigned char> input(k);
     std::mt19937 rand_gen(std::random_device{}());
-    for(int i = 0; i < 100; i++) {
+    for (int i = 0; i < words; i++) {
         for (auto &bit : input) {
             bit = rand_gen() & 1U;
         }
-        std::cout << "Generated random input:\n" << PrintVector(input) << "\n";
+        std::cout << "\nGenerated random input:\n" << PrintVector(input) << "\n";
         auto encoded = encoder.encode(input);
         std::cout << "Encoded it into:\n" << PrintVector(encoded) << "\n";
         auto transmitted = channel.transmit(encoded);
         std::cout << "Data was transmitted as:\n";
         std::cout << std::fixed << std::setprecision(2);
-        for(float data : transmitted)
+        for (float data : transmitted)
             std::cout << data << " ";
         std::cout << "\n";
         float prob_log;
@@ -309,9 +309,8 @@ int main() {
                   << "\n";
         auto decoded = decoder.DecodeMessageFromCodeword(codeword);
         std::cout << "Codeword was decoded into:\n" << PrintVector(decoded) << "\n";
-        if(decoded != input){
-            std::cout << "ERROR!!";
-            return 1;
+        if (decoded != input) {
+            std::cout << "Message was transmitted incorrectly!\n";
         }
     }
     return 0;
