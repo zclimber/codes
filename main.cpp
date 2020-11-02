@@ -247,7 +247,6 @@ public:
         return res;
     }
 
-private:
     matrix gen_matrix;
     std::vector<int> row_starts;
     BlockCodeTrellis trellis;
@@ -262,6 +261,149 @@ std::string PrintVector(const std::vector<unsigned char> &data) {
     }
     res.pop_back();
     return res;
+}
+
+void dig_trellis_rec(std::set<unsigned long long> &set, BlockCodeTrellis &tr, int index, unsigned long long num,
+                     unsigned long long depth) {
+    if (index == -1)
+        return;
+    if (index == 0) {
+        set.insert(num);
+        return;
+    }
+    dig_trellis_rec(set, tr, tr.data[index].prev_cells[0], num, depth + 1);
+    dig_trellis_rec(set, tr, tr.data[index].prev_cells[1], num + (1UL << depth), depth + 1);
+}
+
+std::set<unsigned long long> dig_trellis(BlockCodeTrellis &tr) {
+    std::set<unsigned long long> res;
+    dig_trellis_rec(res, tr, tr.data.size() - 1, 0, 0);
+    return res;
+}
+
+unsigned long long vector_to_code(const std::vector<unsigned char> &vec) {
+    unsigned long long res = 0;
+    for (auto c : vec) {
+        res = (res << 1U) + (c & 1U);
+    }
+    return res;
+}
+
+std::vector<unsigned char> code_to_vector(unsigned long long code, int size) {
+    std::vector<unsigned char> res(size);
+    for (int i = size - 1; i >= 0; i--) {
+        res[i] = code & 1U;
+        code >>= 1U;
+    }
+    return res;
+}
+
+std::set<unsigned long long> gen_all_codewords(const matrix &gen_matrix) {
+    std::vector<unsigned long long> base;
+    base.reserve(gen_matrix.size());
+    for (const auto &vec: gen_matrix) {
+        base.push_back(vector_to_code(vec));
+    }
+    std::set<unsigned long long> res;
+    for (unsigned num = 0; num < (1U << base.size()); num++) {
+        unsigned long long cur = 0;
+        for (unsigned i = 0; i < base.size(); i++) {
+            cur ^= (num & (1U << i)) ? base[i] : 0;
+        }
+        res.insert(cur);
+    }
+    return res;
+}
+
+[[maybe_unused]] void TestGenerateMinSpan() {
+    // test minspan
+    std::random_device rd{};
+    std::mt19937 gen{rd()};
+    int n = 14, k = 6;
+    matrix code_gen_matrix(k, std::vector<unsigned char>(n));
+    for (int id = 0; id < 100000; id++) {
+        auto rnd = gen();
+        if (vector_to_code(code_to_vector(rnd, 32)) != rnd) {
+            std::cerr << "ERROR RECODE at " << id << "\n";
+            std::cerr << rnd << " " << vector_to_code(code_to_vector(rnd, 32)) << "\n";
+        }
+        for (int i = 0; i < k; i++) {
+            for (int j = 0; j < n; j++) {
+                code_gen_matrix[i][j] = gen() & 1U;
+            }
+        }
+        auto before = gen_all_codewords(code_gen_matrix);
+        GenerateMinimalSpanMatrix(code_gen_matrix, n, k);
+        auto after = gen_all_codewords(code_gen_matrix);
+        if (before != after) {
+            std::cerr << "ERROR at " << id << "\n";
+        }
+    }
+}
+
+void CheckViterbiDecoderOnce(std::mt19937 &gen, int n, int k, matrix &code_gen_matrix, int id) {
+    auto rnd = gen();
+    if (vector_to_code(code_to_vector(rnd, 32)) != rnd) {
+        std::cerr << "ERROR RECODE at " << id << "\n";
+        std::cerr << rnd << " " << vector_to_code(code_to_vector(rnd, 32)) << "\n";
+    }
+    for (int i = 0; i < k; i++) {
+        for (int j = 0; j < n; j++) {
+            code_gen_matrix[i][j] = gen() & 1U;
+        }
+    }
+    auto orig_matrix = code_gen_matrix;
+    auto before = gen_all_codewords(code_gen_matrix);
+    GenerateMinimalSpanMatrix(code_gen_matrix, n, k);
+    auto after = gen_all_codewords(code_gen_matrix);
+    if (before != after) {
+        std::cerr << "ERROR at " << id << "\n";
+    }
+
+    for (auto &row: code_gen_matrix) {
+        if (std::find(row.begin(), row.end(), 1) == row.end()) {
+            CheckViterbiDecoderOnce(gen, n, k, code_gen_matrix, id);
+            return;
+        }
+    }
+
+
+    std::vector<unsigned char> input(k, 0);
+    SimpleEncoder enc(code_gen_matrix);
+    AWGNChannel channel(0.0001);
+    ViterbiSoftDecoder dec(code_gen_matrix);
+
+    auto codes = dig_trellis(dec.trellis);
+    if (codes != before) {
+        std::cerr << "ERROR TRELLIS at " << id << "\n";
+        ViterbiSoftDecoder dec2(code_gen_matrix);
+    }
+    std::vector<unsigned char> encoded, restored, decoded;
+    std::vector<float> transmitted;
+    enc.encode(input, encoded);
+    channel.transmit(encoded, transmitted);
+    auto prob_log = dec.DecodeInputToCodeword(transmitted, restored);
+    auto restored_copy = restored;
+    dec.DecodeMessageFromCodeword(restored, decoded);
+    if (decoded != input) {
+        std::cout << "ERROR DECODING at " << id << "!!!\n";
+        prob_log = dec.DecodeInputToCodeword(transmitted, restored);
+        dec.DecodeMessageFromCodeword(restored, decoded);
+        exit(1);
+    }
+}
+
+[[maybe_unused]] void TestViterbiDecoderRandom() {
+    // test minspan
+    std::random_device rd{};
+    std::mt19937 gen{rd()};
+    int n = 20, k = 12;
+    matrix code_gen_matrix(k, std::vector<unsigned char>(n));
+    for (int id = 0; id < 100000; id++) {
+        if (id % 100 == 0)
+            std::cout << id << "\n";
+        CheckViterbiDecoderOnce(gen, n, k, code_gen_matrix, id);
+    }
 }
 
 matrix GenerateReedMullerCode(int r, int m) {
