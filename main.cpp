@@ -4,12 +4,22 @@
 #include <vector>
 #include <random>
 #include <set>
+#include <map>
+#include <thread>
+#include <mutex>
+#include <string>
 
 using matrix = std::vector<std::vector<unsigned char>>;
 
 void XorVectors(std::vector<unsigned char> &vec1, const std::vector<unsigned char> &vec2) {
     for (int j = 0; j < vec2.size(); j++) {
         vec1[j] ^= vec2[j];
+    }
+}
+
+void AndVectors(std::vector<unsigned char> &vec1, const std::vector<unsigned char> &vec2) {
+    for (int j = 0; j < vec2.size(); j++) {
+        vec1[j] &= vec2[j];
     }
 }
 
@@ -254,63 +264,126 @@ std::string PrintVector(const std::vector<unsigned char> &data) {
     return res;
 }
 
+matrix GenerateReedMullerCode(int r, int m) {
+    int n = 1 << m;
+    matrix res(1, std::vector<unsigned char>(n, 1));
+    if (r == 0)
+        return res;
+    std::vector<unsigned char> temp(n);
+    for (unsigned i = 0; i < m; i++) {
+        for (unsigned mask = 0; mask < n; mask++) {
+            temp[mask] = (mask >> i) & 1U;
+        }
+        res.push_back(temp);
+    }
+    if (r == 1)
+        return res;
+    for (int bits = 2; bits <= r; bits++) {
+        for (unsigned mask = 0; mask < n; mask++) {
+            temp.assign(n, 1);
+            int bitcount = 0;
+            for (unsigned i = 0; i < m; i++) {
+                if ((mask >> i) & 1U) {
+                    bitcount++;
+                    AndVectors(temp, res[i + 1]);
+                }
+            }
+            if (bitcount == bits)
+                res.push_back(temp);
+        }
+    }
+    return res;
+}
+
+struct ReedMullerChecker {
+    std::map<int, std::map<std::string, double>> reed_muller_measures;
+    std::set<std::string> reed_muller_names;
+    std::mutex reed_muller_mutex;
+
+    void SingleThreadReedMullerCheck(int code_r, int code_m, int iter, int snr_db_start, int snr_db_finish,
+                                     int snr_db_step = 1) {
+        matrix code_gen_matrix = GenerateReedMullerCode(code_r, code_m);
+        int k = code_gen_matrix.size();
+        int n = code_gen_matrix[0].size();
+        GenerateMinimalSpanMatrix(code_gen_matrix, n, k);
+        std::vector<unsigned char> input(k);
+        std::vector<unsigned char> encoded, codeword, decoded;
+        std::vector<float> transmitted;
+        std::mt19937 rand_gen(std::random_device{}());
+
+        SimpleEncoder encoder(code_gen_matrix);
+        ViterbiSoftDecoder decoder(code_gen_matrix);
+        std::string name = "RM(" + std::to_string(code_r) + "," + std::to_string(code_m) + ")";
+        for (int snr_db = snr_db_start; snr_db <= snr_db_finish; snr_db += snr_db_step) {
+            AWGNChannel channel((float) pow(10., 0.1 * snr_db));
+            int correct = 0;
+            for (int index = 0; index < iter; index++) {
+                unsigned val = rand_gen();
+                for (unsigned i = 0; i < k; i++) {
+                    input[i] = (val >> i) & 1U;
+                }
+                encoder.encode(input, encoded);
+                channel.transmit(encoded, transmitted);
+                decoder.DecodeInputToCodeword(transmitted, codeword);
+                if (codeword == encoded) {
+                    correct++;
+                }
+            }
+            std::lock_guard guard(reed_muller_mutex);
+            reed_muller_measures[snr_db][name] = double(correct) / iter;
+        }
+        std::lock_guard guard(reed_muller_mutex);
+        reed_muller_names.insert(std::move(name));
+    }
+
+    void MultiThreadedReedMullerCheck() {
+        std::vector<std::thread> threads;
+        threads.emplace_back([&]() {
+            SingleThreadReedMullerCheck(1, 3, 10000000, -10, 10);
+            SingleThreadReedMullerCheck(2, 3, 10000000, -10, 10);
+        });
+        threads.emplace_back([&]() {
+            SingleThreadReedMullerCheck(1, 4, 10000000, -10, 10);
+            SingleThreadReedMullerCheck(2, 4, 10000000, -10, 10);
+        });
+        threads.emplace_back([&]() {
+            SingleThreadReedMullerCheck(1, 5, 10000000, -10, 0);
+        });
+        threads.emplace_back([&]() {
+            SingleThreadReedMullerCheck(2, 5, 10000000, -10, 0);
+        });
+        threads.emplace_back([&]() {
+            SingleThreadReedMullerCheck(1, 5, 10000000, 1, 10);
+        });
+        threads.emplace_back([&]() {
+            SingleThreadReedMullerCheck(2, 5, 10000000, 1, 10);
+        });
+        for (auto &thr: threads) {
+            thr.join();
+        }
+    }
+
+    void PrintDataAsCSV() {
+        for (auto &name: reed_muller_names) {
+            std::cout << ";" << name;
+        }
+        std::cout << "\n";
+        for (auto &[snr, measures]: reed_muller_measures) {
+            std::cout << (double) snr / 10;
+            for (auto &name: reed_muller_names) {
+                if (auto it = measures.find(name); it != measures.end()) {
+                    std::cout << it->second;
+                }
+                std::cout << ";";
+            }
+            std::cout << "\n";
+        }
+    }
+};
+
 int main() {
-    int n, k, words;
-    float noise_sigma;
-    std::cin >> n >> k >> noise_sigma >> words;
-    matrix code_gen_matrix(k);
-    for (int i = 0; i < k; i++) {
-        code_gen_matrix[i].resize(n);
-        for (int j = 0; j < n; j++) {
-            int x;
-            std::cin >> x;
-            code_gen_matrix[i][j] = x;
-        }
-    }
-
-    // to minimal span form
-    GenerateMinimalSpanMatrix(code_gen_matrix, n, k);
-
-    std::cout << "Converted code matrix to minimal span form:\n";
-    // output minimal span matrix
-    for (int i = 0; i < k; i++) {
-        for (int j = 0; j < n; j++) {
-            std::cout << (int) code_gen_matrix[i][j] << " ";
-        }
-        std::cout << "\n";
-    }
-
-    SimpleEncoder encoder(code_gen_matrix);
-    AWGNChannel channel(0.8);
-    ViterbiSoftDecoder decoder(code_gen_matrix);
-
-    std::vector<unsigned char> input(k);
-    std::mt19937 rand_gen(std::random_device{}());
-
-    std::vector<unsigned char> encoded, codeword, decoded;
-    std::vector<float> transmitted;
-    for (int i = 0; i < words; i++) {
-        for (auto &bit : input) {
-            bit = rand_gen() & 1U;
-        }
-        std::cout << "\nGenerated random input:\n" << PrintVector(input) << "\n";
-        encoder.encode(input, encoded);
-        std::cout << "Encoded it into:\n" << PrintVector(encoded) << "\n";
-        channel.transmit(encoded, transmitted);
-        std::cout << "Data was transmitted as:\n";
-        std::cout << std::fixed << std::setprecision(2);
-        for (float data : transmitted)
-            std::cout << data << " ";
-        std::cout << "\n";
-        float prob_log = decoder.DecodeInputToCodeword(transmitted, codeword);
-        std::cout << "Transmitted data was restored with cumulative ML of " << prob_log << ":\n"
-                  << PrintVector(codeword)
-                  << "\n";
-        decoder.DecodeMessageFromCodeword(codeword, decoded);
-        std::cout << "Codeword was decoded into:\n" << PrintVector(decoded) << "\n";
-        if (decoded != input) {
-            std::cout << "Message was transmitted incorrectly!\n";
-        }
-    }
+    ReedMullerChecker checker;
+    checker.MultiThreadedReedMullerCheck();
+    checker.PrintDataAsCSV();
     return 0;
 }
