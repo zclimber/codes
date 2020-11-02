@@ -441,6 +441,7 @@ struct ReedMullerChecker {
     std::map<int, std::map<std::string, double>> reed_muller_measures;
     std::set<std::string> reed_muller_names;
     std::mutex reed_muller_mutex;
+    int check_iter = 10000000;
 
     void SingleThreadReedMullerCheck(int code_r, int code_m, int iter, int snr_db_start, int snr_db_finish,
                                      int snr_db_step = 1) {
@@ -457,7 +458,7 @@ struct ReedMullerChecker {
         ViterbiSoftDecoder decoder(code_gen_matrix);
         std::string name = "RM(" + std::to_string(code_r) + "," + std::to_string(code_m) + ")";
         for (int snr_db = snr_db_start; snr_db <= snr_db_finish; snr_db += snr_db_step) {
-            AWGNChannel channel((float) pow(10., 0.1 * snr_db));
+            AWGNChannel channel((float) pow(10., -0.1 * snr_db));
             int correct = 0;
             for (int index = 0; index < iter; index++) {
                 unsigned val = rand_gen();
@@ -481,24 +482,24 @@ struct ReedMullerChecker {
     void MultiThreadedReedMullerCheck() {
         std::vector<std::thread> threads;
         threads.emplace_back([&]() {
-            SingleThreadReedMullerCheck(1, 3, 10000000, -10, 10);
-            SingleThreadReedMullerCheck(2, 3, 10000000, -10, 10);
+            SingleThreadReedMullerCheck(1, 3, check_iter, -10, 10);
+            SingleThreadReedMullerCheck(2, 3, check_iter, -10, 10);
         });
         threads.emplace_back([&]() {
-            SingleThreadReedMullerCheck(1, 4, 10000000, -10, 10);
-            SingleThreadReedMullerCheck(2, 4, 10000000, -10, 10);
+            SingleThreadReedMullerCheck(1, 4, check_iter, -10, 10);
+            SingleThreadReedMullerCheck(2, 4, check_iter, -10, 10);
         });
         threads.emplace_back([&]() {
-            SingleThreadReedMullerCheck(1, 5, 10000000, -10, 0);
+            SingleThreadReedMullerCheck(1, 5, check_iter, -10, 0);
         });
         threads.emplace_back([&]() {
-            SingleThreadReedMullerCheck(2, 5, 10000000, -10, 0);
+            SingleThreadReedMullerCheck(2, 5, check_iter, -10, 0);
         });
         threads.emplace_back([&]() {
-            SingleThreadReedMullerCheck(1, 5, 10000000, 1, 10);
+            SingleThreadReedMullerCheck(1, 5, check_iter, 1, 10);
         });
         threads.emplace_back([&]() {
-            SingleThreadReedMullerCheck(2, 5, 10000000, 1, 10);
+            SingleThreadReedMullerCheck(2, 5, check_iter, 1, 10);
         });
         for (auto &thr: threads) {
             thr.join();
@@ -511,12 +512,12 @@ struct ReedMullerChecker {
         }
         std::cout << "\n";
         for (auto &[snr, measures]: reed_muller_measures) {
-            std::cout << (double) snr / 10;
+            std::cout << double(snr) / 10;
             for (auto &name: reed_muller_names) {
+                std::cout << ";";
                 if (auto it = measures.find(name); it != measures.end()) {
                     std::cout << it->second;
                 }
-                std::cout << ";";
             }
             std::cout << "\n";
         }
