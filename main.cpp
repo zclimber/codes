@@ -66,13 +66,11 @@ public:
     explicit AWGNChannel(float noise_sigma) : gen(std::random_device{}()), noise(0., noise_sigma) {
     }
 
-    std::vector<float> transmit(const std::vector<unsigned char> &data) {
-        std::vector<float> result;
-        result.reserve(data.size());
-        for (auto bit : data) {
-            result.push_back(noise(gen) + (bit == 1 ? 1.f : -1.f));
+    void transmit(const std::vector<unsigned char> &data, std::vector<float> &result) {
+        result.resize(data.size());
+        for (auto i = 0U; i < data.size(); i++) {
+            result[i] = noise(gen) + (data[i] == 1 ? 1.f : -1.f);
         }
-        return result;
     }
 
 private:
@@ -86,18 +84,17 @@ public:
                                                 gen_matrix(std::move(gen_matrix)) {
     }
 
-    std::vector<unsigned char> encode(const std::vector<unsigned char> &data) {
-        std::vector<unsigned char> res(gen_matrix.front().size(), 0);
-        for (auto row = 0U; row < k; row++) {
+    void encode(const std::vector<unsigned char> &data, std::vector<unsigned char> &res) {
+        res.assign(gen_matrix.front().size(), 0U);
+        for (int row = 0; row < k; row++) {
             if (data[row] == 1) {
                 XorVectors(res, gen_matrix[row]);
             }
         }
-        return res;
     }
 
 private:
-    int n, k;
+    int n = 0, k = 0;
     matrix gen_matrix;
 };
 
@@ -105,7 +102,7 @@ struct BlockCodeTrellis {
     struct TrellisCell {
         float self_value = 0.;
         int prev_cells[2] = {-1, -1};
-        int selected_cell;
+        int selected_cell = -1;
     };
     mutable std::vector<TrellisCell> data;
     std::vector<int> layer_start;
@@ -190,8 +187,8 @@ public:
         trellis = CreateCodeTrellisFromGenMatrix(orig_gen_matrix);
     }
 
-    std::vector<unsigned char> DecodeInputToCodeword(const std::vector<float> &data, float &probability_log) const {
-        std::vector<unsigned char> res(data.size());
+    float DecodeInputToCodeword(const std::vector<float> &data, std::vector<unsigned char> &res) const {
+        res.resize(data.size());
         const float *current_sym = data.data() - 1;
         const int *next_section = trellis.layer_start.data() + 1;
         for (int i = 1; i < trellis.data.size(); i++) {
@@ -218,23 +215,21 @@ public:
                 }
             }
         }
-        probability_log = trellis.data.back().self_value;
         int cur_cell = (int) trellis.data.size() - 1;
         for (int sym = (int) data.size() - 1; sym >= 0; sym--) {
             res[sym] = trellis.data[cur_cell].selected_cell;
             cur_cell = trellis.data[cur_cell].prev_cells[res[sym]];
         }
-        return res;
+        return trellis.data.back().self_value;
     }
 
-    std::vector<unsigned char> DecodeMessageFromCodeword(std::vector<unsigned char> &data) {
-        std::vector<unsigned char> res(gen_matrix.size());
+    void DecodeMessageFromCodeword(std::vector<unsigned char> &data, std::vector<unsigned char> &res) {
+        res.resize(gen_matrix.size());
         for (int row = 0; row < gen_matrix.size(); row++) {
             res[row] = data[row_starts[row]];
             if (res[row])
                 XorVectors(data, gen_matrix[row]);
         }
-        return res;
     }
 
     std::vector<unsigned char> decode(const std::vector<float> &data, float &probability_log) const {
@@ -291,25 +286,27 @@ int main() {
 
     std::vector<unsigned char> input(k);
     std::mt19937 rand_gen(std::random_device{}());
+
+    std::vector<unsigned char> encoded, codeword, decoded;
+    std::vector<float> transmitted;
     for (int i = 0; i < words; i++) {
         for (auto &bit : input) {
             bit = rand_gen() & 1U;
         }
         std::cout << "\nGenerated random input:\n" << PrintVector(input) << "\n";
-        auto encoded = encoder.encode(input);
+        encoder.encode(input, encoded);
         std::cout << "Encoded it into:\n" << PrintVector(encoded) << "\n";
-        auto transmitted = channel.transmit(encoded);
+        channel.transmit(encoded, transmitted);
         std::cout << "Data was transmitted as:\n";
         std::cout << std::fixed << std::setprecision(2);
         for (float data : transmitted)
             std::cout << data << " ";
         std::cout << "\n";
-        float prob_log;
-        auto codeword = decoder.DecodeInputToCodeword(transmitted, prob_log);
+        float prob_log = decoder.DecodeInputToCodeword(transmitted, codeword);
         std::cout << "Transmitted data was restored with cumulative ML of " << prob_log << ":\n"
                   << PrintVector(codeword)
                   << "\n";
-        auto decoded = decoder.DecodeMessageFromCodeword(codeword);
+        decoder.DecodeMessageFromCodeword(codeword, decoded);
         std::cout << "Codeword was decoded into:\n" << PrintVector(decoded) << "\n";
         if (decoded != input) {
             std::cout << "Message was transmitted incorrectly!\n";
