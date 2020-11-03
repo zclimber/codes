@@ -441,9 +441,9 @@ struct ReedMullerChecker {
     std::map<int, std::map<std::string, int>> reed_muller_measures;
     std::set<std::string> reed_muller_names;
     std::mutex reed_muller_mutex;
-    int check_iter = 100000000;
+    int check_iter = 10000000;
 
-    struct SingleThreadReedMullerCheck{
+    struct SingleThreadReedMullerCheck {
         std::pair<int, std::string> Run() {
             matrix code_gen_matrix = GenerateReedMullerCode(code_r, code_m);
             int k = code_gen_matrix.size();
@@ -457,9 +457,10 @@ struct ReedMullerChecker {
             SimpleEncoder encoder(code_gen_matrix);
             ViterbiSoftDecoder decoder(code_gen_matrix);
             AWGNChannel channel((float) pow(10., -0.01 * snr_db_10));
-            std::string name = "RM(" + std::to_string(code_r) + "," + std::to_string(code_m) + ")";
-            int correct = 0;
-            for (int index = 0; index < iter; index++) {
+            std::string name = "RM(" + std::to_string(n) + "," + std::to_string(k) + ")";
+            int errors = 0;
+            int total = 0;
+            for (;;) {
                 unsigned val = rand_gen();
                 for (unsigned i = 0; i < k; i++) {
                     input[i] = (val >> i) & 1U;
@@ -467,42 +468,80 @@ struct ReedMullerChecker {
                 encoder.encode(input, encoded);
                 channel.transmit(encoded, transmitted);
                 decoder.DecodeInputToCodeword(transmitted, codeword);
-                if (codeword == encoded) {
-                    correct++;
+                decoder.DecodeMessageFromCodeword(codeword, decoded);
+                for (int i = 0; i < k; i++) {
+                    total++;
+                    if (input[i] != decoded[i]) {
+                        errors++;
+                    }
+                    if (total == iter) {
+                        return {errors, name};
+                    }
                 }
             }
-            return {correct, name};
         }
+
         int code_r, code_m, iter, snr_db_10;
     };
-    std::vector<SingleThreadReedMullerCheck> tasks;
-    void RunTasks(){
-        SingleThreadReedMullerCheck task{};
-        {
-            std::lock_guard guard(reed_muller_mutex);
-            if(tasks.empty())
-                return;
-            task = tasks.back();
-            tasks.pop_back();
-        }
-        auto [correct, name] = task.Run();
 
-        std::lock_guard guard(reed_muller_mutex);
-        reed_muller_measures[task.snr_db_10][name] = correct;
-        reed_muller_names.insert(std::move(name));
+    std::vector<SingleThreadReedMullerCheck> tasks;
+
+    void RunTasks() {
+        std::unique_lock lock(reed_muller_mutex);
+        for (;;) {
+            if (tasks.empty())
+                return;
+            SingleThreadReedMullerCheck task = tasks.back();
+            tasks.pop_back();
+
+            lock.unlock();
+            auto[correct, name] = task.Run();
+            lock.lock();
+
+            reed_muller_measures[task.snr_db_10][name] = correct;
+            reed_muller_names.insert(std::move(name));
+        }
     }
 
     void MultiThreadedReedMullerCheck(int thread_num) {
-        for(int r = 1; r <= 2; r++){
-            for(int m = 3; m <= 5; m++){
-                for(int snr_db_10 = -100; snr_db_10 < 100; snr_db_10 += 10){
+        for (int r = 1; r <= 2; r++) {
+            for (int m = 3; m <= 5; m++) {
+                for (int snr_db_10 = -60; snr_db_10 <= 30; snr_db_10 += 10) {
                     tasks.push_back(SingleThreadReedMullerCheck{r, m, check_iter, snr_db_10});
                 }
             }
         }
+        for (int snr_db_10 = 0; snr_db_10 <= 10; snr_db_10 += 2) {
+            if(snr_db_10 % 10 == 0)
+                continue;
+            tasks.push_back(SingleThreadReedMullerCheck{1, 5, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{1, 4, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 5, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{1, 3, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 4, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
+        }
+        for (int snr_db_10 = 10; snr_db_10 <= 30; snr_db_10 += 2) {
+            if(snr_db_10 % 10 == 0)
+                continue;
+            tasks.push_back(SingleThreadReedMullerCheck{1, 4, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 5, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{1, 3, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 4, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
+        }
+        for (int snr_db_10 = 30; snr_db_10 <= 40; snr_db_10 += 2) {
+            tasks.push_back(SingleThreadReedMullerCheck{1, 3, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 4, check_iter, snr_db_10});
+            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
+        }
+        for (int snr_db_10 = 40; snr_db_10 <= 60; snr_db_10 += 2) {
+            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
+        }
         std::vector<std::thread> threads;
-        for(int i =0; i < thread_num; i++){
-            threads.emplace_back([&](){
+        threads.reserve(thread_num);
+        for (int i = 0; i < thread_num; i++) {
+            threads.emplace_back([&]() {
                 RunTasks();
             });
         }
@@ -521,7 +560,7 @@ struct ReedMullerChecker {
             for (auto &name: reed_muller_names) {
                 std::cout << ";";
                 if (auto it = measures.find(name); it != measures.end()) {
-                    std::cout << check_iter - it->second;
+                    std::cout << it->second;
                 }
             }
             std::cout << "\n";
@@ -531,7 +570,7 @@ struct ReedMullerChecker {
 
 int main() {
     ReedMullerChecker checker;
-    checker.MultiThreadedReedMullerCheck(6);
+    checker.MultiThreadedReedMullerCheck(10);
     checker.PrintDataAsCSV();
     return 0;
 }
