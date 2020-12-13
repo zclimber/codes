@@ -6,10 +6,32 @@
 #include <set>
 #include <map>
 #include <thread>
+#include <sstream>
 #include <mutex>
 #include <string>
+#include <algorithm>
+#include <numeric>
 
 using matrix = std::vector<std::vector<unsigned char>>;
+
+std::string PrintVector(const std::vector<unsigned char> &data) {
+    std::string res;
+    res.resize((data.size() * 2), '0');
+    for (int i = 0; i < data.size(); i++) {
+        res[i * 2] += data[i];
+        res[i * 2 + 1] = ' ';
+    }
+    res.pop_back();
+    return res;
+}
+
+std::string PrintMatrix(const matrix &data) {
+    std::stringstream ss;
+    for (auto &row : data) {
+        ss << PrintVector(row) << "\n";
+    }
+    return ss.str();
+}
 
 void XorVectors(std::vector<unsigned char> &vec1, const std::vector<unsigned char> &vec2) {
     for (int j = 0; j < vec2.size(); j++) {
@@ -71,6 +93,24 @@ void GenerateMinimalSpanMatrix(matrix &gen_matrix, int n, int k) {
     GenerateMinimalSpanMatrixBackwardPass(gen_matrix, n, k);
 }
 
+void MultiplyVectorByMatrix(const std::vector<unsigned char> &data, const matrix &gen_matrix,
+                            std::vector<unsigned char> &res) {
+    res.assign(gen_matrix.front().size(), 0U);
+    for (int row = 0; row < gen_matrix.size(); row++) {
+        if (data[row] == 1) {
+            XorVectors(res, gen_matrix[row]);
+        }
+    }
+}
+
+void SwapColumns(matrix &m, int col1, int col2) {
+    if (col1 == col2)
+        return;
+    for (int i = 0; i < m.size(); i++) {
+        std::swap(m[i][col1], m[i][col2]);
+    }
+}
+
 class AWGNChannel {
 public:
     explicit AWGNChannel(float noise_sigma) : gen(std::random_device{}()), noise(0., noise_sigma) {
@@ -95,12 +135,7 @@ public:
     }
 
     void encode(const std::vector<unsigned char> &data, std::vector<unsigned char> &res) {
-        res.assign(gen_matrix.front().size(), 0U);
-        for (int row = 0; row < k; row++) {
-            if (data[row] == 1) {
-                XorVectors(res, gen_matrix[row]);
-            }
-        }
+        MultiplyVectorByMatrix(data, gen_matrix, res);
     }
 
 private:
@@ -116,6 +151,7 @@ struct BlockCodeTrellis {
     };
     mutable std::vector<TrellisCell> data;
     std::vector<int> layer_start;
+    std::vector<int> layer_end;
 };
 
 void
@@ -147,7 +183,7 @@ BlockCodeTrellis CreateCodeTrellisFromGenMatrix(const matrix &orig_gen_matrix) {
     std::vector<BlockCodeTrellis::TrellisCell> data(1);
     std::set<int> active_rows_set;
     std::vector<unsigned> previous_mask_value(k);
-    std::vector<int> layer_start;
+    std::vector<int> layer_start, layer_end;
     for (int index = 0; index < n; index++) {
         if (starting_row[index] > -1) {
             active_rows_set.insert(starting_row[index]);
@@ -162,6 +198,7 @@ BlockCodeTrellis CreateCodeTrellisFromGenMatrix(const matrix &orig_gen_matrix) {
         }
         layer_start.push_back(first_index);
         first_index = data.size();
+        layer_end.push_back(first_index);
         data.resize(data.size() + (1U << active_rows.size()));
         for (unsigned mask = 0; mask < (1U << active_rows.size()); mask++) {
             unsigned char this_sym = 0;
@@ -184,7 +221,8 @@ BlockCodeTrellis CreateCodeTrellisFromGenMatrix(const matrix &orig_gen_matrix) {
         }
     }
     layer_start.push_back(first_index);
-    return BlockCodeTrellis{data, layer_start};
+    layer_end.push_back(data.size());
+    return BlockCodeTrellis{data, layer_start, layer_end};
 }
 
 class ViterbiSoftDecoder {
@@ -252,46 +290,48 @@ public:
     BlockCodeTrellis trellis;
 };
 
-std::string PrintVector(const std::vector<unsigned char> &data) {
-    std::string res;
-    res.resize((data.size() * 2), '0');
-    for (int i = 0; i < data.size(); i++) {
-        res[i * 2] += data[i];
-        res[i * 2 + 1] = ' ';
-    }
-    res.pop_back();
-    return res;
-}
-
-void dig_trellis_rec(std::set<unsigned long long> &set, BlockCodeTrellis &tr, int index, unsigned long long num,
+void dig_trellis_rec(std::vector<std::set<unsigned long long>> &set, const BlockCodeTrellis &tr, unsigned begin_layer,
+                     int index, unsigned long long num,
                      unsigned long long depth) {
     if (index == -1)
         return;
-    if (index == 0) {
-        set.insert(num);
+    if (index < tr.layer_end[begin_layer]) {
+        set[index - tr.layer_start[begin_layer]].insert(num);
         return;
     }
-    dig_trellis_rec(set, tr, tr.data[index].prev_cells[0], num, depth + 1);
-    dig_trellis_rec(set, tr, tr.data[index].prev_cells[1], num + (1UL << depth), depth + 1);
+    dig_trellis_rec(set, tr, begin_layer, tr.data[index].prev_cells[0], num * 2, depth + 1);
+    dig_trellis_rec(set, tr, begin_layer, tr.data[index].prev_cells[1], num * 2 + 1, depth + 1);
+}
+
+// result[finish][start]
+std::vector<std::vector<std::set<unsigned long long>>>
+dig_trellis_pos(unsigned start, unsigned finish, const BlockCodeTrellis &tr) {
+    int finish_size = tr.layer_end[finish] - tr.layer_start[finish];
+    int start_size = tr.layer_end[start] - tr.layer_start[start];
+    std::vector<std::vector<std::set<unsigned long long>>> res;
+    res.resize(finish_size);
+    for (int fin = 0; fin < finish_size; fin++) {
+        res[fin].resize(start_size);
+        dig_trellis_rec(res[fin], tr, start, tr.layer_start[finish] + fin, 0, 0);
+    }
+    return res;
 }
 
 std::set<unsigned long long> dig_trellis(BlockCodeTrellis &tr) {
-    std::set<unsigned long long> res;
-    dig_trellis_rec(res, tr, tr.data.size() - 1, 0, 0);
-    return res;
+    return dig_trellis_pos(0, tr.layer_start.size() - 1, tr)[0][0];
 }
 
 unsigned long long vector_to_code(const std::vector<unsigned char> &vec) {
     unsigned long long res = 0;
-    for (auto c : vec) {
-        res = (res << 1U) + (c & 1U);
+    for (unsigned i = 0; i < vec.size(); i++) {
+        res |= static_cast<unsigned long long>(vec[i]) << i;
     }
     return res;
 }
 
 std::vector<unsigned char> code_to_vector(unsigned long long code, int size) {
     std::vector<unsigned char> res(size);
-    for (int i = size - 1; i >= 0; i--) {
+    for (int i = 0; i < size; i++) {
         res[i] = code & 1U;
         code >>= 1U;
     }
@@ -308,11 +348,58 @@ std::set<unsigned long long> gen_all_codewords(const matrix &gen_matrix) {
     for (unsigned num = 0; num < (1U << base.size()); num++) {
         unsigned long long cur = 0;
         for (unsigned i = 0; i < base.size(); i++) {
-            cur ^= (num & (1U << i)) ? base[i] : 0;
+            cur ^= (num & (1U << i)) ? base[base.size() - i - 1] : 0;
         }
         res.insert(cur);
     }
     return res;
+}
+
+void GetSystematicLikeMatrix(matrix &temp, std::vector<int> &columns) {
+    int n = temp[0].size();
+    int k = temp.size();
+
+    columns.resize(n);
+    std::iota(columns.begin(), columns.end(), 0);
+
+    int pos = 0;
+    for (int i = 0; i < k && pos < n; i++) {
+        auto one = std::find(temp[i].begin() + pos, temp[i].end(), 1);
+        if (one == temp[i].end()) {
+            continue;
+        }
+        int one_pos = one - temp[i].begin();
+        SwapColumns(temp, one_pos, pos);
+        std::swap(columns[one_pos], columns[pos]);
+        for (int j = 0; j < k; j++) {
+            if (temp[j][pos] && j != i) {
+                XorVectors(temp[j], temp[i]);
+            }
+        }
+        pos++;
+    }
+}
+
+matrix GenerateTransposedCheckMatrix(const matrix &gen_matrix, int n, int k) {
+    matrix temp = gen_matrix;
+    std::vector<int> columns;
+    GetSystematicLikeMatrix(temp, columns);
+
+    int r = n - k;
+    matrix res(n);
+    for (int i = 0; i < n; i++) {
+        if (i >= k) {
+            res[i].resize(r);
+            res[i][i - k] = 1;
+        } else {
+            res[i] = {temp[i].begin() + k, temp[i].end()};
+        }
+    }
+    matrix resres(n);
+    for (int i = 0; i < n; i++) {
+        resres[columns[i]] = std::move(res[i]);
+    }
+    return resres;
 }
 
 [[maybe_unused]] void TestGenerateMinSpan() {
@@ -341,33 +428,52 @@ std::set<unsigned long long> gen_all_codewords(const matrix &gen_matrix) {
     }
 }
 
-void CheckViterbiDecoderOnce(std::mt19937 &gen, int n, int k, matrix &code_gen_matrix, int id) {
+void CheckVectorToCode(std::mt19937 &gen, int id) {
     auto rnd = gen();
     if (vector_to_code(code_to_vector(rnd, 32)) != rnd) {
         std::cerr << "ERROR RECODE at " << id << "\n";
         std::cerr << rnd << " " << vector_to_code(code_to_vector(rnd, 32)) << "\n";
     }
+}
+
+void CheckCheckMatrix(int n, int k, const matrix &code_gen_matrix) {
+    auto check_matrix = GenerateTransposedCheckMatrix(code_gen_matrix, n, k);
+    std::vector<unsigned char> checks;
+    for (auto &code : code_gen_matrix) {
+        MultiplyVectorByMatrix(code, check_matrix, checks);
+        if (std::find(checks.begin(), checks.end(), 1) != checks.end()) {
+            std::cerr << "WRONG CHECK MATRIX!!\n";
+            std::cerr << PrintMatrix(code_gen_matrix) << "\n" << PrintMatrix(check_matrix) << "\n"
+                      << PrintVector(checks)
+                      << "\n\n";
+            //GenerateTransposedCheckMatrix(gen_matrix, n, k);
+            exit(1);
+        }
+    }
+}
+
+void GenerateRandomCode(std::mt19937 &gen, int n, int k, int id, matrix &code_gen_matrix,
+                        std::set<unsigned long long int> &before) {
     for (int i = 0; i < k; i++) {
         for (int j = 0; j < n; j++) {
             code_gen_matrix[i][j] = gen() & 1U;
         }
     }
-    auto orig_matrix = code_gen_matrix;
-    auto before = gen_all_codewords(code_gen_matrix);
+    before = gen_all_codewords(code_gen_matrix);
     GenerateMinimalSpanMatrix(code_gen_matrix, n, k);
-    auto after = gen_all_codewords(code_gen_matrix);
-    if (before != after) {
+    if (before != gen_all_codewords(code_gen_matrix)) {
         std::cerr << "ERROR at " << id << "\n";
     }
 
     for (auto &row: code_gen_matrix) {
         if (std::find(row.begin(), row.end(), 1) == row.end()) {
-            CheckViterbiDecoderOnce(gen, n, k, code_gen_matrix, id);
-            return;
+            GenerateRandomCode(gen, n, k, id, code_gen_matrix, before);
         }
     }
+}
 
-
+void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &code_gen_matrix,
+                         std::set<unsigned long long> &before) {
     std::vector<unsigned char> input(k, 0);
     SimpleEncoder enc(code_gen_matrix);
     AWGNChannel channel(0.0001);
@@ -402,7 +508,11 @@ void CheckViterbiDecoderOnce(std::mt19937 &gen, int n, int k, matrix &code_gen_m
     for (int id = 0; id < 100000; id++) {
         if (id % 100 == 0)
             std::cout << id << "\n";
-        CheckViterbiDecoderOnce(gen, n, k, code_gen_matrix, id);
+        CheckVectorToCode(gen, id);
+        std::set<unsigned long long> before;
+        GenerateRandomCode(gen, n, k, id, code_gen_matrix, before);
+        CheckCheckMatrix(n, k, code_gen_matrix);
+        CheckViterbiDecoder(gen, n, k, id, code_gen_matrix, before);
     }
 }
 
@@ -443,6 +553,13 @@ struct ReedMullerChecker {
     std::mutex reed_muller_mutex;
     int check_iter = 10000000;
 
+    static float CalculateAWGNSigmaForTargetSNR(double target_snr_db, int n, int k) {
+//        10 * log10(1. / n0 * n / k) == target_snr_db;
+        double eb_div_n0 = pow(10, target_snr_db / 10);
+        double n0 = 1. * n / k / eb_div_n0;
+        return (float) sqrt(n0 / 2);
+    }
+
     struct SingleThreadReedMullerCheck {
         std::pair<int, std::string> Run() {
             matrix code_gen_matrix = GenerateReedMullerCode(code_r, code_m);
@@ -456,11 +573,11 @@ struct ReedMullerChecker {
 
             SimpleEncoder encoder(code_gen_matrix);
             ViterbiSoftDecoder decoder(code_gen_matrix);
-            AWGNChannel channel((float) pow(10., -0.01 * snr_db_10));
+            float sigma = CalculateAWGNSigmaForTargetSNR(.1 * snr_db_10, n, k);
+            AWGNChannel channel(sigma);
             std::string name = "RM(" + std::to_string(n) + "," + std::to_string(k) + ")";
             int errors = 0;
-            int total = 0;
-            for (;;) {
+            for (int total = 0; total < iter; total++) {
                 unsigned val = rand_gen();
                 for (unsigned i = 0; i < k; i++) {
                     input[i] = (val >> i) & 1U;
@@ -468,17 +585,10 @@ struct ReedMullerChecker {
                 encoder.encode(input, encoded);
                 channel.transmit(encoded, transmitted);
                 decoder.DecodeInputToCodeword(transmitted, codeword);
-                decoder.DecodeMessageFromCodeword(codeword, decoded);
-                for (int i = 0; i < k; i++) {
-                    total++;
-                    if (input[i] != decoded[i]) {
-                        errors++;
-                    }
-                    if (total == iter) {
-                        return {errors, name};
-                    }
-                }
+                if (encoded != codeword)
+                    errors++;
             }
+            return {errors, name};
         }
 
         int code_r, code_m, iter, snr_db_10;
@@ -506,37 +616,10 @@ struct ReedMullerChecker {
     void MultiThreadedReedMullerCheck(int thread_num) {
         for (int r = 1; r <= 2; r++) {
             for (int m = 3; m <= 5; m++) {
-                for (int snr_db_10 = -60; snr_db_10 <= 30; snr_db_10 += 10) {
+                for (int snr_db_10 = -100; snr_db_10 <= 100; snr_db_10 += 5) {
                     tasks.push_back(SingleThreadReedMullerCheck{r, m, check_iter, snr_db_10});
                 }
             }
-        }
-        for (int snr_db_10 = 0; snr_db_10 <= 10; snr_db_10 += 2) {
-            if(snr_db_10 % 10 == 0)
-                continue;
-            tasks.push_back(SingleThreadReedMullerCheck{1, 5, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{1, 4, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 5, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{1, 3, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 4, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
-        }
-        for (int snr_db_10 = 10; snr_db_10 <= 30; snr_db_10 += 2) {
-            if(snr_db_10 % 10 == 0)
-                continue;
-            tasks.push_back(SingleThreadReedMullerCheck{1, 4, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 5, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{1, 3, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 4, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
-        }
-        for (int snr_db_10 = 30; snr_db_10 <= 40; snr_db_10 += 2) {
-            tasks.push_back(SingleThreadReedMullerCheck{1, 3, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 4, check_iter, snr_db_10});
-            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
-        }
-        for (int snr_db_10 = 40; snr_db_10 <= 60; snr_db_10 += 2) {
-            tasks.push_back(SingleThreadReedMullerCheck{2, 3, check_iter, snr_db_10});
         }
         std::vector<std::thread> threads;
         threads.reserve(thread_num);
@@ -568,7 +651,86 @@ struct ReedMullerChecker {
     }
 };
 
+struct RecursiveTrellisDecoding {
+    explicit RecursiveTrellisDecoding(const matrix &code) : code(code) {
+        k = code.size();
+        n = code[0].size();
+        check = GenerateTransposedCheckMatrix(code, n, k);
+        auto words = gen_all_codewords(code);
+        codewords.assign(words.begin(), words.end());
+        PrepareDecoderRec(0, n);
+    }
+
+    void Decode(const std::vector<float> &data, std::vector<unsigned char> &codeword) {}
+
+private:
+    unsigned long long GetMask(unsigned from, unsigned to) {
+        unsigned long long res = 0;
+        for (auto i = from; i < to; i++) {
+            res |= (1ULL << i);
+        }
+        return res;
+    }
+
+    void PrepareDecoderRec(int from, int to) {
+        if (to - from <= 2) {
+            PrepareMakeCBT(from, to);
+        } else {
+            int mid = (from + to) / 2;
+            PrepareDecoderRec(from, mid);
+            PrepareDecoderRec(mid, to);
+            PrepareCombCBT(from, mid, to);
+        }
+    }
+
+    void DecodeRec(int from, int to) {
+        if (to - from <= 2) {
+            MakeCBT(from, to);
+        } else {
+            int mid = (from + to) / 2;
+            DecodeRec(from, mid);
+            DecodeRec(mid, to);
+            CombCBT(from, mid, to);
+        }
+    }
+
+    void PrepareMakeCBT(int from, int to) {
+        auto mask = GetMask(from, to);
+        std::map<unsigned long long, unsigned long long> items;
+        std::vector<unsigned long long> zeros;
+        for (auto word : codewords) {
+            if ((word & mask) == word) {
+                items[word] = word;
+                zeros.push_back(word);
+            } else {
+                items.insert({word & mask, word});
+            }
+        }
+    }
+
+    void PrepareCombCBT(int from, int mid, int to) {}
+
+    void MakeCBT(int from, int to) {
+
+    }
+
+    void CombCBT(int from, int mid, int to) {}
+
+    void CreateShortenedCode(int x, int y) {
+        matrix temp = code;
+    }
+
+    matrix code, check;
+    std::vector<unsigned long long> codewords;
+    int n, k;
+};
+
+void checker() {
+}
+
 int main() {
+    TestViterbiDecoderRandom();
+    return 0;
     ReedMullerChecker checker;
     checker.MultiThreadedReedMullerCheck(10);
     checker.PrintDataAsCSV();
