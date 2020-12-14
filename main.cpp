@@ -8,6 +8,7 @@
 #include <thread>
 #include <sstream>
 #include <mutex>
+#include <atomic>
 #include <string>
 #include <algorithm>
 #include <numeric>
@@ -380,6 +381,17 @@ void GetSystematicLikeMatrix(matrix &temp, std::vector<int> &columns) {
     }
 }
 
+matrix RevertColumnSwappedMatrix(const matrix &temp, const std::vector<int> &columns) {
+    matrix res(temp.size());
+    for (int i = 0; i < temp.size(); i++) {
+        res[i].resize(columns.size());
+        for (int j = 0; j < columns.size(); j++) {
+            res[i][columns[j]] = temp[i][j];
+        }
+    }
+    return res;
+}
+
 matrix GenerateTransposedCheckMatrix(const matrix &gen_matrix, int n, int k) {
     matrix temp = gen_matrix;
     std::vector<int> columns;
@@ -499,20 +511,126 @@ void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &
     }
 }
 
-[[maybe_unused]] void TestViterbiDecoderRandom() {
+void CheckSubsets(int n, int k, int id, const matrix &code_gen_matrix) {
+    std::vector<int> row_starts, row_ends;
+    for (auto row : code_gen_matrix) {
+        row_starts.push_back(std::find(row.begin(), row.end(), 1) - row.begin());
+        int one_from_end = std::find(row.rbegin(), row.rend(), 1) - row.rbegin();
+        row_ends.push_back(n - one_from_end);
+    }
+    for (int st = 0; st < n; st++) {
+        for (int fin = st + 1; fin <= n; fin++) {
+            auto trellis = CreateCodeTrellisFromGenMatrix(code_gen_matrix);
+            // generate all compound branches
+            auto subsets = dig_trellis_pos(st, fin, trellis);
+            // collect different branches
+            std::set<std::set<unsigned long long>> cosets;
+            for (auto &fins : subsets) {
+                for (auto &starts: fins) {
+                    if (!starts.empty()) {
+                        cosets.insert(starts);
+                    }
+                }
+            }
+            // check all branches have same number of words
+            auto size = cosets.begin()->size();
+            for (auto &coset : cosets) {
+                if (coset.size() != size) {
+                    std::cerr << "DIFFERENT COSET SIZES\n";
+                }
+            }
+            // check all words are only encountered once
+            std::set<unsigned long long> all_words;
+            for (auto &coset : cosets) {
+                for (auto word : coset) {
+                    all_words.insert(word);
+                }
+            }
+            if (all_words.size() != size * cosets.size()) {
+                std::cerr << "DUBLICATE ITEMS IN COSETS\n";
+            }
+            // find active rows in MSF to collect sets and subsets base vectors
+            unsigned active_rows = 0;
+            matrix check_matrix;
+            for (int row = 0; row < k; row++) {
+                if (row_starts[row] >= st && row_ends[row] <= fin) {
+                    active_rows++;
+                    check_matrix.emplace_back(code_gen_matrix[row].begin() + st, code_gen_matrix[row].begin() + fin);
+                }
+            }
+            for (int row = 0; row < k; row++) {
+                if (!(row_starts[row] >= st && row_ends[row] <= fin)) {
+                    check_matrix.emplace_back(code_gen_matrix[row].begin() + st, code_gen_matrix[row].begin() + fin);
+                }
+            }
+            // also check prognosed set size values
+            if (size != (1ULL << active_rows)) {
+                std::cerr << "COSET SIZE DIFFERENT FROM ESTIMATE\n";
+            }
+            // also check that words from trellis are equal to words from matrix
+            if (all_words != gen_all_codewords(check_matrix)) {
+                std::cerr << "STRANGE ITEMS IN COSETS\n";
+            }
+            // find active rows for basis
+            matrix check_copy = check_matrix;
+            std::vector<int> cols;
+            GetSystematicLikeMatrix(check_matrix, cols);
+            for(int i = 0; i < check_matrix.size(); i++){
+                if(std::find(check_matrix[i].begin(), check_matrix[i].end(), 1) != check_matrix[i].end()){
+                    check_matrix[i] = check_copy[i];
+                }
+            }
+            matrix set_matrix(check_matrix.begin(), check_matrix.begin() + active_rows);
+            matrix coset_matrix(check_matrix.begin() + active_rows, check_matrix.end());
+
+            auto words_set = gen_all_codewords(set_matrix);
+            auto words_coset = gen_all_codewords(coset_matrix);
+            // check words_set are set base and words_coset are cosets base
+            if (cosets.size() != words_coset.size()){
+                std::cerr << "WORDS COSET SIZE NOT EQUAL TO COSETS COUNT\n";
+            }
+            for(auto coset_word : words_coset){
+                std::set<unsigned long long> modified_words;
+                for(auto set_word : words_set){
+                    modified_words.insert(set_word ^ coset_word);
+                }
+                if(cosets.count(modified_words) == 0){
+                    std::cerr << "DEDUCED SET NOT FOUND IN SETS\n";
+                }
+            }
+        }
+    }
+}
+
+void RunRandomTestsSingleThread(std::atomic_int &id_atomic, int max_id) {
     // test minspan
     std::random_device rd{};
     std::mt19937 gen{rd()};
     int n = 20, k = 12;
     matrix code_gen_matrix(k, std::vector<unsigned char>(n));
-    for (int id = 0; id < 100000; id++) {
+    for (;;) {
+        int id = id_atomic.fetch_add(1);
         if (id % 100 == 0)
             std::cout << id << "\n";
+        if (id > max_id)
+            break;
         CheckVectorToCode(gen, id);
         std::set<unsigned long long> before;
         GenerateRandomCode(gen, n, k, id, code_gen_matrix, before);
         CheckCheckMatrix(n, k, code_gen_matrix);
         CheckViterbiDecoder(gen, n, k, id, code_gen_matrix, before);
+        CheckSubsets(n, k, id, code_gen_matrix);
+    }
+}
+
+void RunRandomTests(int threads_count = 6, int tests_count = 100000) {
+    std::vector<std::thread> threads(threads_count);
+    std::atomic_int id_atomic = 0;
+    for (auto &thr : threads) {
+        thr = std::thread([&id_atomic, tests_count]() { RunRandomTestsSingleThread(id_atomic, 100000); });
+    }
+    for (auto &thr : threads) {
+        thr.join();
     }
 }
 
@@ -729,7 +847,7 @@ void checker() {
 }
 
 int main() {
-    TestViterbiDecoderRandom();
+    RunRandomTests();
     return 0;
     ReedMullerChecker checker;
     checker.MultiThreadedReedMullerCheck(10);
