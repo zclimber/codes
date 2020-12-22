@@ -33,7 +33,7 @@ void GenerateRandomCode(std::mt19937 &gen, int n, int k, int id, matrix &code_ge
     }
 }
 
-int decode_count = 10000;
+int decode_count = 1000000;
 
 [[maybe_unused]] void TestGenerateMinSpan() {
     // test minspan
@@ -85,8 +85,7 @@ void CheckCheckMatrix(int n, int k, const matrix &code_gen_matrix) {
     }
 }
 
-void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &code_gen_matrix,
-                         std::set<unsigned long long> &before) {
+void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &code_gen_matrix) {
     std::vector<unsigned char> input(k, 0);
     SimpleEncoder enc(code_gen_matrix);
     AWGNChannel channel(0.0001);

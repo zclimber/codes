@@ -104,6 +104,8 @@ BlockCodeTrellis CreateCodeTrellisFromGenMatrix(const matrix &orig_gen_matrix) {
     return BlockCodeTrellis{data, layer_start, layer_end};
 }
 
+unsigned long long vit_comps = 0, vit_adds = 0;
+
 class ViterbiSoftDecoder {
 public:
     explicit ViterbiSoftDecoder(const matrix &orig_gen_matrix) {
@@ -116,23 +118,26 @@ public:
 
     float DecodeInputToCodeword(const std::vector<float> &data, std::vector<unsigned char> &res) const {
         res.resize(data.size());
-        const float *current_sym = data.data() - 1;
-        const int *next_section = trellis.layer_start.data() + 1;
+        int current_symbol_num = 0;
+        float current_symbol_value;
         for (int i = 1; i < trellis.data.size(); i++) {
-            if (i == *next_section) {
-                next_section++;
-                current_sym++;
+            if (i == trellis.layer_end[current_symbol_num]) {
+                current_symbol_num++;
+                current_symbol_value = data[current_symbol_num - 1];
             }
             BlockCodeTrellis::TrellisCell &cur = trellis.data[i];
+            vit_adds++;
             if (cur.prev_cells[0] == -1) {
                 cur.selected_cell = 1;
-                cur.self_value = trellis.data[cur.prev_cells[1]].self_value + *current_sym;
+                cur.self_value = trellis.data[cur.prev_cells[1]].self_value + current_symbol_value;
             } else if (cur.prev_cells[1] == -1) {
                 cur.selected_cell = 0;
-                cur.self_value = trellis.data[cur.prev_cells[0]].self_value - *current_sym;
+                cur.self_value = trellis.data[cur.prev_cells[0]].self_value - current_symbol_value;
             } else {
-                float value_0 = trellis.data[cur.prev_cells[0]].self_value - *current_sym;
-                float value_1 = trellis.data[cur.prev_cells[1]].self_value + *current_sym;
+                vit_adds++;
+                vit_comps++;
+                float value_0 = trellis.data[cur.prev_cells[0]].self_value - current_symbol_value;
+                float value_1 = trellis.data[cur.prev_cells[1]].self_value + current_symbol_value;
                 if (value_0 >= value_1) {
                     cur.self_value = value_0;
                     cur.selected_cell = 0;
@@ -142,7 +147,7 @@ public:
                 }
             }
         }
-        int cur_cell = (int) trellis.data.size() - 1;
+        int cur_cell = trellis.layer_start.back();
         for (int sym = (int) data.size() - 1; sym >= 0; sym--) {
             res[sym] = trellis.data[cur_cell].selected_cell;
             cur_cell = trellis.data[cur_cell].prev_cells[res[sym]];
