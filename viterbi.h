@@ -51,6 +51,32 @@ std::set<unsigned long long> dig_trellis(BlockCodeTrellis &tr) {
     return dig_trellis_pos(0, tr.layer_start.size() - 1, tr)[0][0];
 }
 
+void dig_trellis_rec(std::vector<unsigned long long>&set, const BlockCodeTrellis &tr, unsigned begin_layer,
+                     int index, unsigned long long num,
+                     unsigned long long depth) {
+    if (index == -1)
+        return;
+    if (index < tr.layer_end[begin_layer]) {
+      int set_index = index - tr.layer_start[begin_layer];
+        set[set_index] = std::min(num, set[set_index]);
+        return;
+    }
+    dig_trellis_rec(set, tr, begin_layer, tr.data[index].prev_cells[0], num * 2, depth + 1);
+    dig_trellis_rec(set, tr, begin_layer, tr.data[index].prev_cells[1], num * 2 + 1, depth + 1);
+}
+
+// result[finish][start]
+void 
+dig_trellis_pos(unsigned start, unsigned finish, const BlockCodeTrellis &tr, std::vector<std::vector<unsigned long long>>& res) {
+    int finish_size = tr.layer_end[finish] - tr.layer_start[finish];
+    int start_size = tr.layer_end[start] - tr.layer_start[start];
+    res.resize(finish_size);
+    for (int fin = 0; fin < finish_size; fin++) {
+        res[fin].assign(start_size, std::numeric_limits<unsigned long long>::max());
+        dig_trellis_rec(res[fin], tr, start, tr.layer_start[finish] + fin, 0, 0);
+    }
+}
+
 BlockCodeTrellis CreateCodeTrellisFromGenMatrix(const matrix &orig_gen_matrix) {
     int n = orig_gen_matrix.front().size();
     int k = orig_gen_matrix.size();
