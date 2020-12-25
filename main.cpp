@@ -31,6 +31,10 @@ struct TrellisCompoundBranchRule {
     bool operator<(const TrellisCompoundBranchRule& other) const {
         return std::make_tuple(first_half, second_half, result) < std::make_tuple(other.first_half, other.second_half, other.result);
     }
+
+    bool operator==(const TrellisCompoundBranchRule& other) const {
+        return std::make_tuple(first_half, second_half, result) == std::make_tuple(other.first_half, other.second_half, other.result);
+    }
 };
 
 struct TrellisEdgeLabel {
@@ -77,22 +81,22 @@ void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
         return;
     }
 
-    dig_trellis_pos(st, fin, trellis, min_edges);
+    //dig_trellis_pos(st, fin, trellis, min_edges);
     std::map<unsigned long long, int> compound_ids;
     std::vector<std::vector<int>> this_edges(min_edges.size());
-    labels.clear();
-    for (int fin_id = 0; fin_id < min_edges.size(); fin_id++) {
-        this_edges[fin_id].resize(min_edges[0].size(), -1);
-        for (int st_id = 0; st_id < min_edges[0].size(); st_id++) {
-            if (min_edges[fin_id][st_id] != std::numeric_limits<unsigned long long>::max()) {
-                auto insert = compound_ids.insert({min_edges[fin_id][st_id], (int)compound_ids.size()});
-                if (insert.second) {
-                    labels.push_back(TrellisEdgeLabel{min_edges[fin_id][st_id], 0.f});
-                }
-                this_edges[fin_id][st_id] = insert.first->second;
-            }
-        }
-    }
+    //labels.clear();
+    //for (int fin_id = 0; fin_id < min_edges.size(); fin_id++) {
+    //    this_edges[fin_id].resize(min_edges[0].size(), -1);
+    //    for (int st_id = 0; st_id < min_edges[0].size(); st_id++) {
+    //        if (min_edges[fin_id][st_id] != std::numeric_limits<unsigned long long>::max()) {
+    //            auto insert = compound_ids.insert({min_edges[fin_id][st_id], (int)compound_ids.size()});
+    //            if (insert.second) {
+    //                labels.push_back(TrellisEdgeLabel{min_edges[fin_id][st_id], 0.f});
+    //            }
+    //            this_edges[fin_id][st_id] = insert.first->second;
+    //        }
+    //    }
+    //}
 
     std::vector<std::vector<TrellisEdge>> edges_1, edges_2;
     std::set<TrellisCompoundBranchRule> cbt_rules;
@@ -114,38 +118,49 @@ void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
                 unsigned long long probable_label = label_1 + (label_2 << (mid - st));
                 edges_temp[i].emplace_back(edge_2.to, probable_label, edge_1.label_id, edge_2.label_id);
 
-                TrellisCompoundBranchRule res{edge_1.label_id, edge_2.label_id, this_edges[edge_2.to][i]};
-                cbt_rules.insert(res);
-                edges[i].push_back(TrellisEdge{i, edge_2.to, this_edges[edge_2.to][i]});
+                //TrellisCompoundBranchRule res{edge_1.label_id, edge_2.label_id, this_edges[edge_2.to][i]};
+                //cbt_rules.insert(res);
+                //edges[i].push_back(TrellisEdge{i, edge_2.to, this_edges[edge_2.to][i]});
             }
         }
         std::sort(edges[i].begin(), edges[i].end());
         edges[i].erase(std::unique(edges[i].begin(), edges[i].end()), edges[i].end());
     }
     std::vector<std::vector<TrellisEdge>> edges_real(edges_1.size());
+    std::set<TrellisCompoundBranchRule> cbt_rules_2;
     for (int i = 0; i < edges_temp.size(); i++) {
         std::sort(edges_temp[i].begin(), edges_temp[i].end());
         int last_to = -1;
+        unsigned long long last_label = 0;
+        int last_id = -1;
         for (auto [to, label, id1, id2] : edges_temp[i]) {
             if (last_to != to) {
                 last_to = to;
-                auto actual_label = labels[this_edges[to][i]].current_label;
-                if (actual_label != label) {
-                    std::cerr << "PROBABLE LABEL DIFFERENT FROM ACTUAL : " << label << " " << actual_label
-                        << "\n";
-                }
+                last_label = label;
+                //auto actual_label = labels[this_edges[to][i]].current_label;
+                //if (actual_label != label) {
+                //    std::cerr << "PROBABLE LABEL DIFFERENT FROM ACTUAL : " << label << " " << actual_label
+                //        << "\n";
+                //}
                 auto insert = compound_ids.insert({label, (int)compound_ids.size()});
                 if (insert.second) {
                     labels.push_back(TrellisEdgeLabel{label, 0.f});
                 }
-                edges_real[i].push_back(TrellisEdge{i, to, insert.first->second});
+                last_id = insert.first->second;
+                edges_real[i].push_back(TrellisEdge{i, to, last_id});
             }
+            TrellisCompoundBranchRule res{id1, id2, last_id};
+            cbt_rules_2.insert(res);
         }
-        if (edges_real[i] != edges[i]) {
-            std::cerr << "EDGES SET DIFFERENT FROM ACTUAL\n";
-        }
+        edges[i] = std::move(edges_real[i]);
+        //if (edges_real[i] != edges[i]) {
+        //    std::cerr << "EDGES SET DIFFERENT FROM ACTUAL\n";
+        //}
     }
-    rules[st][fin].assign(cbt_rules.begin(), cbt_rules.end());
+    //if (cbt_rules_2 != cbt_rules) {
+    //        //std::cerr << "RULES SET DIFFERENT FROM ACTUAL\n";
+    //}
+    rules[st][fin].assign(cbt_rules_2.begin(), cbt_rules_2.end());
     return;
 
     //start special matrix check
@@ -186,6 +201,68 @@ void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
     }
 };
 
+void CompareGen2(int st, int fin, const BlockCodeTrellis& trellis,
+                 std::vector<std::vector<TrellisEdge>>& edges, LabelCollection& labels_collection,
+                 RuleCollection& rules) {
+    unsigned label_size = fin - st;
+    auto& labels = labels_collection[st][fin];
+    // generate all compound branches
+    auto subsets = dig_trellis_pos(st, fin, trellis);
+    if (label_size == 1) {
+        int mul = 1;
+        if (subsets[0][0].size() == 1) {
+            labels.resize(2);
+            labels[0] = TrellisEdgeLabel{0, 0.};
+            labels[1] = TrellisEdgeLabel{1, 0.};
+        } else {
+            mul = 0;
+            labels.resize(1);
+            labels[0] = TrellisEdgeLabel{0, 0.};
+        }
+        edges.resize(subsets[0].size());
+        for (int fin_id = 0; fin_id < subsets.size(); fin_id++) {
+            for (int st_id = 0; st_id < subsets[0].size(); st_id++) {
+                if (!subsets[fin_id][st_id].empty()) {
+                    int label = *subsets[fin_id][st_id].begin() * mul;
+                    edges[st_id].push_back(TrellisEdge{st_id, fin_id, label});
+                }
+            }
+        }
+        return;
+    }
+    std::map<unsigned long long, unsigned long long> compound_ids;
+    std::vector<std::vector<int>> this_edges(subsets.size());
+    labels.clear();
+    for (int fin_id = 0; fin_id < subsets.size(); fin_id++) {
+        this_edges[fin_id].resize(subsets[0].size(), -1);
+        for (int st_id = 0; st_id < subsets[0].size(); st_id++) {
+            if (subsets[fin_id][st_id].size() > 0) {
+                auto insert = compound_ids.insert({*subsets[fin_id][st_id].begin(), compound_ids.size()});
+                if (insert.second) {
+                    labels.push_back(TrellisEdgeLabel{*subsets[fin_id][st_id].begin(), 0.});
+                }
+                this_edges[fin_id][st_id] = insert.first->second;
+            }
+        }
+    }
+
+    std::vector<std::vector<TrellisEdge>> edges_1, edges_2;
+    std::set<TrellisCompoundBranchRule> cbt_rules;
+    CompareGen2(st, (st + fin) / 2, trellis, edges_1, labels_collection, rules);
+    CompareGen2((st + fin) / 2, fin, trellis, edges_2, labels_collection, rules);
+    edges.resize(edges_1.size());
+    for (auto i = 0; i < edges_1.size(); i++) {
+        for (auto& edge_1 : edges_1[i]) {
+            for (auto& edge_2 : edges_2[edge_1.to]) {
+                TrellisCompoundBranchRule res{edge_1.label_id, edge_2.label_id, this_edges[edge_2.to][i]};
+                cbt_rules.insert(res);
+                edges[i].push_back(TrellisEdge{i, edge_2.to, this_edges[edge_2.to][i]});
+            }
+        }
+    }
+    rules[st][fin].assign(cbt_rules.begin(), cbt_rules.end());
+}
+
 unsigned long long rec_comps = 0, rec_adds = 0;
 
 unsigned long long
@@ -193,6 +270,8 @@ Decode(int n, const RuleCollection& rules, LabelCollection& labels_coll, const s
     for (int st = n - 1; st >= 0; st--) {
         for (int fin = st + 1; fin <= n; fin++) {
             auto& labels = labels_coll[st][fin];
+            if (labels_coll[st][fin].empty())
+                continue;
             if (fin == st + 1) {
                 if (labels.size() == 1) {
                     labels[0].current_value = std::abs(data[st]);
@@ -215,7 +294,7 @@ Decode(int n, const RuleCollection& rules, LabelCollection& labels_coll, const s
                     if (link_val > labels[rule.result].current_value) {
                         labels[rule.result].current_value = link_val;
                         labels[rule.result].current_label = labels_1[rule.first_half].current_label +
-                            (labels_2[rule.second_half].current_label << (fin - mid));
+                            (labels_2[rule.second_half].current_label << (mid - st));
                     }
                 }
             }
@@ -250,7 +329,8 @@ void CheckRecursiveDecoder(std::mt19937& gen, int n, int k, int id, const matrix
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < decode_count; i++) {
         auto res = Decode(n, rules, labels, transmits[i]);
-        if (res != codewords[i]) {
+        if (res != codewords[i] && i < decode_count) {
+            auto res = Decode(n, rules, labels, transmits[i]);
             std::cerr << "INCORRECT RECURSIVE DECODE IN " << id << "\n";
         }
     }
@@ -262,7 +342,7 @@ void RunRandomTestsSingleThread(std::atomic_int& id_atomic, int max_id) {
     // test minspan
     std::random_device rd{};
     std::mt19937 gen{rd()};
-    int n = 16, k = 8;
+    int n = 24, k = 12;
     matrix code_gen_matrix(k, std::vector<unsigned char>(n));
     for (;;) {
         vit_adds = vit_comps = rec_adds = rec_comps = 0;
@@ -280,7 +360,7 @@ void RunRandomTestsSingleThread(std::atomic_int& id_atomic, int max_id) {
         CheckRecursiveDecoder(gen, n, k, id, code_gen_matrix);
         std::cout << vit_adds / decode_count << "\t" << vit_comps / decode_count << "\n";
         std::cout << rec_adds / decode_count << "\t" << rec_comps / decode_count << "\n\n";
-        //        CheckSubsets(n, k, id, code_gen_matrix);
+        CheckSubsets(n, k, id, code_gen_matrix);
     }
 }
 
@@ -395,7 +475,7 @@ int main() {
         std::cout << rec_adds / decode_count << "\t" << rec_comps / decode_count << "\n\n";
     }
     //return 0;
-    RunRandomTests(1, 100);
+    RunRandomTests(6, 100000);
     return 0;
     ReedMullerChecker checker;
     checker.MultiThreadedReedMullerCheck(10);
