@@ -62,6 +62,16 @@ unsigned long long vector_to_code(const std::vector<unsigned char> &vec) {
     return res;
 }
 
+template<typename Iterator>
+unsigned long long vector_to_code(Iterator begin, Iterator end) {
+    unsigned long long res = 0;
+    auto size = end - begin;
+    for (unsigned i = 0; i < size; i++) {
+        res |= static_cast<unsigned long long>(begin[i]) << i;
+    }
+    return res;
+}
+
 std::vector<unsigned char> code_to_vector(unsigned long long code, int size) {
     std::vector<unsigned char> res(size);
     for (int i = 0; i < size; i++) {
@@ -69,6 +79,22 @@ std::vector<unsigned char> code_to_vector(unsigned long long code, int size) {
         code >>= 1U;
     }
     return res;
+}
+
+void code_to_vector(unsigned long long code, int size, std::vector<unsigned char>& res) {
+    res.resize(size);
+    for (int i = 0; i < size; i++) {
+        res[i] = code & 1U;
+        code >>= 1U;
+    }
+}
+
+void code_to_vector(unsigned long long code, std::vector<unsigned char>& res) {
+    auto size = res.size();
+    for (unsigned i = 0; i < size; i++) {
+        res[i] = code & 1U;
+        code >>= 1U;
+    }
 }
 
 std::set<unsigned long long> gen_all_codewords(const matrix &gen_matrix) {
@@ -127,6 +153,17 @@ matrix RevertColumnSwappedMatrix(const matrix &temp, const std::vector<int> &col
         res[i].resize(columns.size());
         for (int j = 0; j < columns.size(); j++) {
             res[i][columns[j]] = temp[i][j];
+        }
+    }
+    return res;
+}
+
+matrix TransposeMatrix(const matrix& matrix1){
+    matrix res(matrix1[0].size());
+    for(unsigned i = 0; i < res.size(); i++){
+        res[i].resize(matrix1.size());
+        for(unsigned j = 0; j < matrix1.size(); j++){
+            res[i][j] = matrix1[j][i];
         }
     }
     return res;

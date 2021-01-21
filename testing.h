@@ -99,7 +99,10 @@ void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &
         channel.transmit(codewords[i], transmits[i]);
     }
 
+    auto start0 = std::chrono::high_resolution_clock::now();
     ViterbiSoftDecoder dec(code_gen_matrix);
+    auto end0 = std::chrono::high_resolution_clock::now();
+    std::cout << "Viterbi creation " << std::chrono::duration_cast<std::chrono::duration<double>>(end0 - start0).count() << " s\n";
     std::vector<unsigned char> restored(n);
     auto start = std::chrono::high_resolution_clock::now();
     for(int i = 0; i < decode_count; i++){
