@@ -33,7 +33,7 @@ void GenerateRandomCode(std::mt19937 &gen, int n, int k, int id, matrix &code_ge
     }
 }
 
-int decode_count = 10000;
+int decode_count = 1000;
 
 [[maybe_unused]] void TestGenerateMinSpan() {
     // test minspan

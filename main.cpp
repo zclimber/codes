@@ -96,16 +96,19 @@ void SolveLinearSystem(const matrix& coeff, matrix& temp, const std::vector<unsi
 
 }
 
+template<typename TwoVector>
+void ExpandVector(TwoVector& vec, int n) {
+    vec.resize(n);
+    for (auto& x : vec) {
+        x.resize(n + 1);
+    }
+}
+
 struct RecursiveGenContext {
     RecursiveGenContext(int n) {
-        cbt_values_.resize(n);
-        start_rule_parts_.resize(n);
-        new_rec_rules_.resize(n);
-        for (int i = 0; i < n; i++) {
-            cbt_values_[i].resize(n + 1);
-            start_rule_parts_[i].resize(n + 1);
-            new_rec_rules_[i].resize(n + 1);
-        }
+        ExpandVector(cbt_values_, n);
+        ExpandVector(start_rule_parts_, n);
+        ExpandVector(new_rec_rules_, n);
     }
 
     struct CBTData{
@@ -116,6 +119,96 @@ struct RecursiveGenContext {
 std::vector<std::vector<std::vector<CBTData>>> cbt_values_;
 std::vector<std::vector<std::vector<unsigned long long>>> start_rule_parts_;
 RuleCollection new_rec_rules_;
+
+void CompareGenNew(int st, int fin, const matrix& code_gen_matrix) {
+    unsigned label_size = fin - st;
+    // generate all compound branches
+    if (label_size <= 2) {
+        matrix special_matrix;
+        std::array<unsigned, 4> active_rows;
+        CreateSpecialMatrix(code_gen_matrix, st, fin, fin, active_rows, special_matrix);
+        start_rule_parts_[st][fin].assign(1UL << label_size, -1);
+        cbt_values_[st][fin].resize(1UL << active_rows[3]);
+        std::vector<unsigned char> mask, word;
+        for (unsigned long long w_mask = 0; w_mask < (1ULL << special_matrix.size()); w_mask++) {
+            code_to_vector(w_mask, special_matrix.size(), mask);
+            std::reverse(mask.begin(), mask.end());
+            MultiplyVectorByMatrix(mask, special_matrix, word);
+            auto group = w_mask % (1ULL << active_rows[3]);
+            start_rule_parts_[st][fin][vector_to_code(word)] = group;
+        }
+        special_matrices_[st * 1000 + fin] = std::move(special_matrix);
+        active_rows_[st * 1000 + fin] = active_rows;
+        return;
+    }
+    int mid = (st + fin) / 2;
+    CompareGenNew(st,  mid, code_gen_matrix);
+    CompareGenNew(mid, fin, code_gen_matrix);
+
+    matrix special_matrix;
+    std::array<unsigned, 4> active_rows;
+    CreateSpecialMatrix(code_gen_matrix, st, fin, mid, active_rows, special_matrix);
+
+    matrix solutions_l, solutions_r;
+    matrix eq_full_l, eq_full_r;
+    {
+        matrix trans_l = TransposeMatrix(special_matrices_[st * 1000 + mid]);
+        matrix trans_r = TransposeMatrix(special_matrices_[mid * 1000 + fin]);
+        matrix temp;
+        std::vector<unsigned char> solution;
+        std::vector<unsigned char> res;
+        for (unsigned index = active_rows[0] + active_rows[1]; index < special_matrix.size(); index++) {
+            auto& row = special_matrix[index];
+            res.assign(row.begin(), row.begin() + (mid - st));
+            eq_full_l.push_back(res);
+            SolveLinearSystem(trans_l, temp, res, solution);
+            solutions_l.push_back(solution);
+            res.assign(row.begin() + (mid - st), row.end());
+            eq_full_r.push_back(res);
+            SolveLinearSystem(trans_r, temp, res, solution);
+            solutions_r.push_back(solution);
+        }
+    }
+    unsigned w_pow = active_rows[2] + active_rows[3];
+    std::vector<unsigned char> mask(w_pow), res_l, res_r;
+    unsigned rows_l = active_rows_[st * 1000 + mid][3];
+    unsigned rows_r = active_rows_[mid * 1000 + fin][3];
+    cbt_values_[st][fin].resize(1ULL << active_rows[3]);
+    std::set<TrellisCompoundBranchRule> cbt_rules_3;
+    for (unsigned long long w_mask = 0; w_mask < (1ULL << w_pow); w_mask++) {
+        code_to_vector(w_mask, mask);
+        std::reverse(mask.begin(), mask.end());
+        MultiplyVectorByMatrix(mask, solutions_l, res_l);
+        MultiplyVectorByMatrix(mask, solutions_r, res_r);
+
+        std::vector<unsigned char> res_l_1, res_l_2, res_r_1, res_r_2;
+        MultiplyVectorByMatrix(res_l, special_matrices_[st * 1000 + mid], res_l_1);
+        MultiplyVectorByMatrix(mask, eq_full_l, res_l_2);
+        MultiplyVectorByMatrix(res_r, special_matrices_[mid * 1000 + fin], res_r_1);
+        MultiplyVectorByMatrix(mask, eq_full_r, res_r_2);
+        if (res_l_1 != res_l_2) {
+            std::cerr << "BAD GAUSS\n";
+        }
+        if (res_r_1 != res_r_2) {
+            std::cerr << "BAD GAUSS\n";
+        }
+
+        std::reverse(res_l.begin(), res_l.end());
+        std::reverse(res_r.begin(), res_r.end());
+        unsigned long long index_l = vector_to_code(res_l.begin(), res_l.begin() + rows_l);
+        unsigned long long index_r = vector_to_code(res_r.begin(), res_r.begin() + rows_r);
+        TrellisCompoundBranchRule res{ index_l, index_r, w_mask % (1ULL << active_rows[3]) };
+        bool inserted = cbt_rules_3.insert(res).second;
+        if (!inserted) {
+            std::cerr << "Duplicate edges\n";
+        }
+        assert(inserted);
+    }
+    new_rec_rules_[st][fin].assign(cbt_rules_3.begin(), cbt_rules_3.end());
+
+    special_matrices_[st * 1000 + fin] = std::move(special_matrix);
+    active_rows_[st * 1000 + fin] = active_rows;
+}
 
 void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
                 std::vector<std::vector<TrellisEdge>>& edges, LabelCollection& labels_collection,
@@ -138,6 +231,7 @@ void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
             start_rule_parts_[st][fin][vector_to_code(word)] = group;
         }
         special_matrices_[st * 1000 + fin] = std::move(special_matrix);
+        active_rows_[st * 1000 + fin] = active_rows;
 
         int fin_size = trellis.layer_end[fin] - trellis.layer_start[fin];
         bool is_size_2 = trellis.data[trellis.layer_start[fin]].prev_cells[0] ==
@@ -225,6 +319,7 @@ void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
     CreateSpecialMatrix(code_gen_matrix, st, fin, mid, active_rows, special_matrix);
 
     matrix solutions_l, solutions_r;
+    matrix eq_full_l, eq_full_r;
     {
         matrix trans_l = TransposeMatrix(special_matrices_[st * 1000 + mid]);
         matrix trans_r = TransposeMatrix(special_matrices_[mid * 1000 + fin]);
@@ -234,9 +329,11 @@ void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
         for (unsigned index = active_rows[0] + active_rows[1]; index < special_matrix.size(); index++) {
             auto& row = special_matrix[index];
             res.assign(row.begin(), row.begin() + (mid - st));
+            eq_full_l.push_back(res);
             SolveLinearSystem(trans_l, temp, res, solution);
             solutions_l.push_back(solution);
             res.assign(row.begin() + (mid - st), row.end());
+            eq_full_r.push_back(res);
             SolveLinearSystem(trans_r, temp, res, solution);
             solutions_r.push_back(solution);
         }
@@ -250,14 +347,30 @@ void CompareGen(int st, int fin, const BlockCodeTrellis& trellis,
     std::set<TrellisCompoundBranchRule> cbt_rules_3;
     for (unsigned long long w_mask = 0; w_mask < (1ULL << w_pow); w_mask++) {
         code_to_vector(w_mask, mask);
+        std::reverse(mask.begin(), mask.end());
         MultiplyVectorByMatrix(mask, solutions_l, res_l);
         MultiplyVectorByMatrix(mask, solutions_r, res_r);
-        unsigned long long index_l = vector_to_code(res_l.end() - rows_l, res_l.end());
-        unsigned long long index_r = vector_to_code(res_r.end() - rows_r, res_r.end());
+
+        std::vector<unsigned char> res_l_1, res_l_2, res_r_1, res_r_2;
+        MultiplyVectorByMatrix(res_l, special_matrices_[st * 1000 + mid], res_l_1);
+        MultiplyVectorByMatrix(mask, eq_full_l, res_l_2);
+        MultiplyVectorByMatrix(res_r, special_matrices_[mid * 1000 + fin], res_r_1);
+        MultiplyVectorByMatrix(mask, eq_full_r, res_r_2);
+        if (res_l_1 != res_l_2) {
+            std::cerr << "BAD GAUSS\n";
+        }
+        if (res_r_1 != res_r_2) {
+            std::cerr << "BAD GAUSS\n";
+        }
+
+        std::reverse(res_l.begin(), res_l.end());
+        std::reverse(res_r.begin(), res_r.end());
+        unsigned long long index_l = vector_to_code(res_l.begin(), res_l.begin() + rows_l);
+        unsigned long long index_r = vector_to_code(res_r.begin(), res_r.begin() + rows_r);
         TrellisCompoundBranchRule res{ index_l, index_r, w_mask % (1ULL << active_rows[3]) };
         cbt_rules_3.insert(res);
     }
-    new_rec_rules_[st][fin].assign(cbt_rules_2.begin(), cbt_rules_2.end());
+    new_rec_rules_[st][fin].assign(cbt_rules_3.begin(), cbt_rules_3.end());
 
     special_matrices_[st * 1000 + fin] = std::move(special_matrix);
     active_rows_[st * 1000 + fin] = active_rows;
@@ -316,6 +429,7 @@ unsigned long long rec_comps_2 = 0, rec_adds_2 = 0;
 
 unsigned long long
 Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
+    std::vector<bool> set_groups;
     for (int st = n - 1; st >= 0; st--) {
         for (int fin = st + 1; fin <= n; fin++) {
             auto& labels = ctx.cbt_values_[st][fin];
@@ -323,15 +437,15 @@ Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
                 continue;
             auto& starts = ctx.start_rule_parts_[st][fin];
             if (!ctx.start_rule_parts_[st][fin].empty()) {
+                set_groups.assign(labels.size(), true);
                 assert(starts.back() != -1);
-                std::vector<bool> set_groups(labels.size(), true);
                 unsigned inverse_mask = starts.size() - 1;
                 for (unsigned word = 0; word < starts.size(); word += 2) {
                     if (starts[word] == -1)
                         continue;
-                    float prob = -data[fin - 1];
+                    float prob = -data[st];
                     unsigned ww = word / 2;
-                    for (int i = fin - 2; i >= st; i--, ww /= 2) {
+                    for (int i = st + 1; i < fin; i++, ww /= 2) {
                         rec_adds_2++;
                         if (ww & 1) {
                             prob += data[i];
@@ -373,18 +487,23 @@ Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
                 int mid = (st + fin) / 2;
                 auto& labels_1 = ctx.cbt_values_[st][mid];
                 auto& labels_2 = ctx.cbt_values_[mid][fin];
-                for (auto& label : labels) {
-                    label.value = std::numeric_limits<float>::min();
-                }
-                rec_comps_2--;
+                set_groups.assign(labels.size(), true);
                 for (const auto& rule : ctx.new_rec_rules_[st][fin]) {
-                    rec_comps_2++;
                     rec_adds_2++;
                     auto link_val = labels_1[rule.first_half].value + labels_2[rule.second_half].value;
-                    if (link_val > labels[rule.result].value) {
+                    auto new_label = labels_1[rule.first_half].label +
+                        (labels_2[rule.second_half].label << (mid - st));
+                    if (set_groups[rule.result]) {
+                        set_groups[rule.result] = false;
                         labels[rule.result].value = link_val;
-                        labels[rule.result].label = labels_1[rule.first_half].label +
-                            (labels_2[rule.second_half].label << (mid - st));
+                        labels[rule.result].label = new_label;
+                    }
+                    else {
+                        rec_comps_2++;
+                        if (link_val > labels[rule.result].value) {
+                            labels[rule.result].value = link_val;
+                            labels[rule.result].label = new_label;
+                        }
                     }
                 }
             }
@@ -436,13 +555,15 @@ Decode(int n, const RuleCollection& rules, LabelCollection& labels_coll, const s
 
 void CheckRecursiveDecoder(std::mt19937& gen, int n, int k, int id, const matrix& code_gen_matrix) {
     auto trellis = CreateCodeTrellisFromGenMatrix(code_gen_matrix);
-    RuleCollection rules(n + 1, RuleCollection::value_type(n + 1));
-    LabelCollection labels(n + 1, LabelCollection::value_type(n + 1));
+    RuleCollection rules(n, RuleCollection::value_type(n + 1));
+    LabelCollection labels(n, LabelCollection::value_type(n + 1));
     std::vector<std::vector<TrellisEdge>> edges;
     std::vector<std::vector<unsigned long long>> edges_buf;
     auto start0 = std::chrono::high_resolution_clock::now();
     RecursiveGenContext ctx(n);
     ctx.CompareGen(0, n, trellis, edges, labels, code_gen_matrix, edges_buf, rules);
+    RecursiveGenContext ctx2(n);
+    ctx2.CompareGenNew(0, n, code_gen_matrix);
     auto end0 = std::chrono::high_resolution_clock::now();
     std::cout << "Recurse creation " << std::chrono::duration_cast<std::chrono::duration<double>>(end0 - start0).count() << " s\n";
 
@@ -463,15 +584,15 @@ void CheckRecursiveDecoder(std::mt19937& gen, int n, int k, int id, const matrix
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < decode_count; i++) {
-        auto res = Decode(n, rules, labels, transmits[i]);
-        auto res2 = Decode(n, ctx, transmits[i]);
+        auto res = Decode(n, ctx, transmits[i]);
+        auto res2 = Decode(n, ctx2, transmits[i]);
         if (res != codewords[i] && i < decode_count) {
             auto res = Decode(n, rules, labels, transmits[i]);
             std::cerr << "INCORRECT RECURSIVE DECODE IN " << id << "\n";
         }
-        if (res != res2) {
-            std::cerr << "NEW METHOD IS UNLIKE OLD\n";
-            auto res2 = Decode(n, ctx, transmits[i]);
+        if (res2 != codewords[i]) {
+            std::cerr << "INCORRECT NEW RECURSIVE DECODE IN " << id << "\n";
+            auto res3 = Decode(n, ctx2, transmits[i]);
         }
     }
     auto end = std::chrono::high_resolution_clock::now();
