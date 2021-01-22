@@ -109,6 +109,8 @@ struct RecursiveGenContext {
         ExpandVector(cbt_values_, n);
         ExpandVector(start_rule_parts_, n);
         ExpandVector(new_rec_rules_, n);
+        ExpandVector(predicted_mid_, n);
+        ExpandVector(predicted_diff_, n);
     }
 
     struct CBTData{
@@ -118,12 +120,42 @@ struct RecursiveGenContext {
 
 std::vector<std::vector<std::vector<CBTData>>> cbt_values_;
 std::vector<std::vector<std::vector<unsigned long long>>> start_rule_parts_;
+std::vector<std::vector<unsigned long long>> predicted_diff_;
+std::vector<std::vector<int>> predicted_mid_;
 RuleCollection new_rec_rules_;
+
+void PredictComputationDifficulty(int n, const matrix& code_gen_matrix) {
+    for (int st = n - 1; st >= 0; st--) {
+        for (int fin = st + 1; fin <= n; fin++) {
+            matrix special_matrix;
+            std::array<unsigned, 4> active_rows;
+            CreateSpecialMatrix(code_gen_matrix, st, fin, fin, active_rows, special_matrix);
+
+            predicted_mid_[st][fin] = -1;
+            if (special_matrix.size() >= 60) {
+                predicted_diff_[st][fin] = std::numeric_limits<unsigned long long>::max() / 4;
+            }
+            else {
+                predicted_diff_[st][fin] = (fin - st) * (1ULL << special_matrix.size()) - (1ULL << active_rows[3]);
+            }
+
+            for (int mid = st + 1; mid < fin; mid++) {
+                CreateSpecialMatrix(code_gen_matrix, st, fin, mid, active_rows, special_matrix);
+                auto possible_diff = predicted_diff_[st][mid] + predicted_diff_[mid][fin];
+                possible_diff += (2ULL << (active_rows[2] + active_rows[3])) - (1ULL << active_rows[3]);
+                if (possible_diff < predicted_diff_[st][fin]) {
+                    predicted_diff_[st][fin] = possible_diff;
+                    predicted_mid_[st][fin] = mid;
+                }
+            }
+        }
+    }
+}
 
 void CompareGenNew(int st, int fin, const matrix& code_gen_matrix) {
     unsigned label_size = fin - st;
     // generate all compound branches
-    if (label_size <= 2) {
+    if (predicted_mid_[st][fin] == -1) {
         matrix special_matrix;
         std::array<unsigned, 4> active_rows;
         CreateSpecialMatrix(code_gen_matrix, st, fin, fin, active_rows, special_matrix);
@@ -141,7 +173,7 @@ void CompareGenNew(int st, int fin, const matrix& code_gen_matrix) {
         active_rows_[st * 1000 + fin] = active_rows;
         return;
     }
-    int mid = (st + fin) / 2;
+    int mid = predicted_mid_[st][fin];
     CompareGenNew(st,  mid, code_gen_matrix);
     CompareGenNew(mid, fin, code_gen_matrix);
 
@@ -436,9 +468,33 @@ Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
             if (labels.empty())
                 continue;
             auto& starts = ctx.start_rule_parts_[st][fin];
-            if (!ctx.start_rule_parts_[st][fin].empty()) {
+            int mid = ctx.predicted_mid_[st][fin];
+            if (mid == -1) {
                 set_groups.assign(labels.size(), true);
                 assert(starts.back() != -1);
+                for (unsigned word = 0; word < starts.size(); word ++) {
+                    if (starts[word] == -1)
+                        continue;
+                    float prob = (word & 1) ? data[st] : -data[st];
+                    unsigned ww = word / 2;
+                    for (int i = st + 1; i < fin; i++, ww /= 2) {
+                        rec_adds_2++;
+                        prob += (ww & 1) ? data[i] : -data[i];
+                    }
+                    if (set_groups[starts[word]]) {
+                        set_groups[starts[word]] = false;
+                        labels[starts[word]].label = word;
+                        labels[starts[word]].value = prob;
+                    }
+                    else {
+                        rec_comps_2++;
+                        if (labels[starts[word]].value < prob) {
+                            labels[starts[word]].label = word;
+                            labels[starts[word]].value = prob;
+                        }
+                    }
+                }
+                continue;
                 unsigned inverse_mask = starts.size() - 1;
                 for (unsigned word = 0; word < starts.size(); word += 2) {
                     if (starts[word] == -1)
@@ -453,6 +509,9 @@ Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
                         else {
                             prob -= data[i];
                         }
+                    }
+                    if (prob < 0) {
+
                     }
                     unsigned wcur = word;
                     if (set_groups[starts[wcur]]) {
@@ -484,7 +543,6 @@ Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
                 }
             }
             else {
-                int mid = (st + fin) / 2;
                 auto& labels_1 = ctx.cbt_values_[st][mid];
                 auto& labels_2 = ctx.cbt_values_[mid][fin];
                 set_groups.assign(labels.size(), true);
@@ -554,15 +612,18 @@ Decode(int n, const RuleCollection& rules, LabelCollection& labels_coll, const s
 }
 
 void CheckRecursiveDecoder(std::mt19937& gen, int n, int k, int id, const matrix& code_gen_matrix) {
-    auto trellis = CreateCodeTrellisFromGenMatrix(code_gen_matrix);
-    RuleCollection rules(n, RuleCollection::value_type(n + 1));
-    LabelCollection labels(n, LabelCollection::value_type(n + 1));
-    std::vector<std::vector<TrellisEdge>> edges;
-    std::vector<std::vector<unsigned long long>> edges_buf;
+    //auto trellis = CreateCodeTrellisFromGenMatrix(code_gen_matrix);
+    //RuleCollection rules(n, RuleCollection::value_type(n + 1));
+    //LabelCollection labels(n, LabelCollection::value_type(n + 1));
+    //std::vector<std::vector<TrellisEdge>> edges;
+    //std::vector<std::vector<unsigned long long>> edges_buf;
     auto start0 = std::chrono::high_resolution_clock::now();
-    RecursiveGenContext ctx(n);
-    ctx.CompareGen(0, n, trellis, edges, labels, code_gen_matrix, edges_buf, rules);
+    //RecursiveGenContext ctx(n);
+    //ctx.CompareGen(0, n, trellis, edges, labels, code_gen_matrix, edges_buf, rules);
     RecursiveGenContext ctx2(n);
+    ctx2.PredictComputationDifficulty(n, code_gen_matrix);
+    std::cout << "Predicting minimal " << ctx2.predicted_diff_[0][n] << " ops\n";
+
     ctx2.CompareGenNew(0, n, code_gen_matrix);
     auto end0 = std::chrono::high_resolution_clock::now();
     std::cout << "Recurse creation " << std::chrono::duration_cast<std::chrono::duration<double>>(end0 - start0).count() << " s\n";
@@ -584,12 +645,12 @@ void CheckRecursiveDecoder(std::mt19937& gen, int n, int k, int id, const matrix
 
     auto start = std::chrono::high_resolution_clock::now();
     for (int i = 0; i < decode_count; i++) {
-        auto res = Decode(n, ctx, transmits[i]);
+        //auto res = Decode(n, ctx, transmits[i]);
         auto res2 = Decode(n, ctx2, transmits[i]);
-        if (res != codewords[i] && i < decode_count) {
-            auto res = Decode(n, rules, labels, transmits[i]);
-            std::cerr << "INCORRECT RECURSIVE DECODE IN " << id << "\n";
-        }
+        //if (res != codewords[i] && i < decode_count) {
+        //    auto res = Decode(n, rules, labels, transmits[i]);
+        //    std::cerr << "INCORRECT RECURSIVE DECODE IN " << id << "\n";
+        //}
         if (res2 != codewords[i]) {
             std::cerr << "INCORRECT NEW RECURSIVE DECODE IN " << id << "\n";
             auto res3 = Decode(n, ctx2, transmits[i]);
