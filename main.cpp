@@ -134,7 +134,7 @@ void PredictComputationDifficulty(int n, const matrix& code_gen_matrix) {
             predicted_mid_[st][fin] = -1;
             predicted_diff_[st][fin] = std::numeric_limits<unsigned long long>::max() / 4;
             int l = fin - st;
-            if (special_matrix.size() < 60 && (l % 2 == 0 || l == 1)) {
+            if (special_matrix.size() < 60) {
                 // MakeCBT-I
                 //predicted_diff_[st][fin] = (fin - st) * (1ULL << special_matrix.size()) - (1ULL << active_rows[3]);
                 // MakeCBT-G
@@ -490,17 +490,40 @@ Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
                     }
                     continue;
                 }
+                rec_adds_2 += (fin - st - 1);
+                float prob2 = -std::accumulate(data.begin() + st + 1, data.begin() + fin, data[st]);
+
                 set_groups.assign(labels.size(), true);
                 unsigned inverse_mask = starts.size() - 1;
-                rec_adds_2 += (fin - st - 2);
-                for (unsigned long long word = 0; word < starts.size(); word += 2) {
-                    if (starts[word] == -1) {
+                for (unsigned long long word = 0; word < starts.size() / 2; word++) {
+                    auto wcur = word ^ (word >> 1);
+                    if (wcur) {
+                        auto prev = (word - 1) ^ ((word - 1) >> 1);
+                        auto diff = wcur ^ prev;
+                        auto ww = wcur;
+                        int difx = 0;
+                        for (int i = st; i < fin; i++, ww /= 2, diff /= 2) {
+                            if (diff & 1) {
+                                rec_adds_2++;
+                                difx++;
+                                if (ww & 1) {
+                                    prob2 += data[i] * 2;
+                                }
+                                else {
+                                    prob2 -= data[i] * 2;
+                                }
+                            }
+                        }
+                        if (difx != 1) {
+                            std::cerr << "WTF\n";
+                        }
+                    }
+                    if (starts[wcur] == -1) {
                         continue;
                     }
-                    float prob = -data[st];
-                    unsigned ww = word / 2;
-                    rec_adds_2++;
-                    for (int i = st + 1; i < fin; i++, ww /= 2) {
+                    unsigned ww = wcur;
+                    float prob = 0;
+                    for (int i = st; i < fin; i++, ww /= 2) {
                         if (ww & 1) {
                             prob += data[i];
                         }
@@ -508,7 +531,9 @@ Decode(int n, RecursiveGenContext& ctx, const std::vector<float>& data) {
                             prob -= data[i];
                         }
                     }
-                    auto wcur = word;
+                    if(std::abs(prob2 - prob) > 0.01){
+                        std::cerr << "BAD PRECISION\n";
+                    }
                     if (prob < 0) {
                         prob = -prob;
                         wcur ^= inverse_mask;
