@@ -20,6 +20,7 @@ void GenerateRandomCode(std::mt19937 &gen, int n, int k, int id, matrix &code_ge
             code_gen_matrix[i][j] = gen() & 1U;
         }
     }
+    std::fill(code_gen_matrix.front().begin(), code_gen_matrix.front().end(), 1);
     before = gen_all_codewords(code_gen_matrix);
     GenerateMinimalSpanMatrix(code_gen_matrix, n, k);
     if (before != gen_all_codewords(code_gen_matrix)) {
@@ -85,7 +86,7 @@ void CheckCheckMatrix(int n, int k, const matrix &code_gen_matrix) {
     }
 }
 
-void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &code_gen_matrix) {
+void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &code_gen_matrix, std::ostream& out) {
     std::vector<unsigned char> input(k, 0);
     SimpleEncoder enc(code_gen_matrix);
     AWGNChannel channel(0.0001);
@@ -102,7 +103,7 @@ void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &
     auto start0 = std::chrono::high_resolution_clock::now();
     ViterbiSoftDecoder dec(code_gen_matrix);
     auto end0 = std::chrono::high_resolution_clock::now();
-    std::cout << "Viterbi creation " << std::chrono::duration_cast<std::chrono::duration<double>>(end0 - start0).count() << " s\n";
+    out << "Viterbi creation " << std::chrono::duration_cast<std::chrono::duration<double>>(end0 - start0).count() << " s\n";
     std::vector<unsigned char> restored(n);
     auto start = std::chrono::high_resolution_clock::now();
     for(int i = 0; i < decode_count; i++){
@@ -113,7 +114,7 @@ void CheckViterbiDecoder(std::mt19937 &gen, int n, int k, int id, const matrix &
         }
     }
     auto end = std::chrono::high_resolution_clock::now();
-    std::cout << "Viterbi " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << " s\n";
+    out << "Viterbi " << std::chrono::duration_cast<std::chrono::duration<double>>(end - start).count() << " s\n";
 }
 
 void CheckSubsets(int n, int k, int id, const matrix &code_gen_matrix) {
