@@ -4,9 +4,11 @@
 #include "msf.h"
 #include "viterbi.h"
 #include "reedmuller.h"
+#include "polar_code.h"
 
 #include <iomanip>
 #include <thread>
+#include <future>
 #include <atomic>
 #include <array>
 #include <cassert>
@@ -563,433 +565,69 @@ private:
     int n, k;
 };
 
-template<typename T>
-T pop(std::vector<T>& vector) {
-    T ret = vector.back();
-    vector.pop_back();
-    return ret;
-}
-
-struct PolarCode {
-    PolarCode(int n, int k, float noise_sigma) : n_pow_(n), n_block_(1 << n), k_(k) {
-        BhattacharyyaConstruct(n_block_, k, noise_sigma);
-    }
-
-    void BhattacharyyaConstruct(int n, int k, float noise_sigma) {
-        double sigma_2 = double(noise_sigma) * noise_sigma * 2;
-        double z_awgn = exp(-1 / sigma_2);
-        std::vector<std::pair<double, int>> single_pos(n);
-        single_pos[0] = { z_awgn, 0 };
-        int jump = 1;
-        while (jump < n) {
-            for (int k = 0; k < jump; k++) {
-                double z = single_pos[k].first;
-                single_pos[k] = { 2 * z - z * z, k };
-                single_pos[k + jump] = { z * z, k + jump };
-            }
-            jump *= 2;
-        }
-        std::sort(single_pos.begin(), single_pos.end()); // K first are data bits, N-K last are frozen bits
-        is_info_bit_.resize(n, false);
-        for (size_t info_bit = 0; info_bit < k; info_bit++) {
-            is_info_bit_[single_pos[info_bit].second] = true;
-        }
-    }
-
-    void Encode(const std::vector<unsigned char>& data, std::vector<unsigned char>& res) {
-        res.resize(n_block_);
-
-        const unsigned char* data_ptr = data.data();
-        for (size_t bit = 0; bit < n_block_; bit++) {
-            if (is_info_bit_[bit]) {
-                res[bit] = *(data_ptr)++;
-            }
-            else {
-                res[bit] = 0;
-            }
-        }
-
-        int jump = n_block_ / 2;
-        while (jump >= 1) {
-            for (int i = 0; i < n_block_; i += 2 * jump) {
-                for (int j = 0; j < jump; j += 1) {
-                    res[i + j] = res[i + j] ^ res[i + j + jump];
-                }
-            }
-            jump /= 2;
-        }
-    }
-
-    void Decode(const std::vector<unsigned char>& sent, std::vector<unsigned char>& res) {
-
-        initializeDataStructures();
-
-        int l = assignInitialPath();
-
-        double* p_0 = getArrayPointer_P(0, l);
-
-        for (uint16_t beta = 0; beta < n_block_; ++beta) {
-            p_0[2 * beta] = sent[beta] == 0 ? 0.99 : 0.01;
-            p_0[2 * beta + 1] = sent[beta] == 1 ? 0.99 : 0.01;
-        }
-        decode_scl(res);
-    }
-
-    void PolarCode::decode_scl(std::vector<unsigned char>& res) {
-
-        for (uint16_t phi = 0; phi < n_block_; ++phi) {
-
-            recursivelyCalcP(n_pow_, phi);
-
-            if (is_info_bit_[phi])
-                continuePaths_UnfrozenBit(phi);
-            else {
-                for (uint16_t l = 0; l < _list_size; ++l) {
-                    if (_activePath.at(l) == 0)
-                        continue;
-                    int* c_m = getArrayPointer_C(n_pow_, l);
-                    c_m[(phi % 2)] = 0; // frozen value assumed to be zero
-                    //_arrayPointer_Info.at(l)[phi] = 0;
-                }
-            }
-
-            if ((phi % 2) == 1)
-                recursivelyUpdateC(n_pow_, phi);
-
-        }    
-        uint16_t  l_p = 0;
-
-        double p_p1 = 0;
-        for (uint16_t l = 0; l < _list_size; ++l) {
-
-            if (_activePath.at(l) == 0)
-                continue;
-
-                int* c_m = getArrayPointer_C(n_pow_, l);
-                double* p_m = getArrayPointer_P(n_pow_, l);
-                if (p_p1 < p_m[c_m[1]]) {
-                    l_p = l;
-                    p_p1 = p_m[c_m[1]];
-                }
-        }
-
-        uint8_t* c_0 = _arrayPointer_Info.at(l_p);
-        res.resize(k_);
-        auto res_ptr = res.begin();
-        for (int i = 0; i < n_block_; i++) {
-            if (is_info_bit_[i]) {
-                *(res_ptr++) = c_0[i];
-            }
-        }
-        //std::vector<uint8_t> deocded_info_bits(_info_length);
-        //for (uint16_t beta = 0; beta < _info_length; ++beta)
-        //    deocded_info_bits.at(beta) = c_0[_channel_order_descending.at(beta)];
-
-        for (uint16_t s = 0; s < _list_size; ++s) {
-            delete[] _arrayPointer_Info.at(s);
-            for (uint16_t lambda = 0; lambda < n_pow_ + 1; ++lambda) {
-
-                delete[] _arrayPointer_P.at(lambda).at(s);
-                delete[] _arrayPointer_C.at(lambda).at(s);
-            }
-        }
-
-    }
-
-    void initializeDataStructures() {
-        int _n = n_pow_;
-        _inactivePathIndices.clear();
-        _activePath.resize(_list_size);
-        _arrayPointer_P.resize(_n + 1, std::vector<double*>(_list_size));
-        _arrayPointer_C.resize(_n + 1, std::vector<int*>(_list_size));
-        _arrayPointer_Info.resize(_list_size);
-        _pathIndexToArrayIndex.resize(_n + 1, std::vector<int>(_list_size));
-
-        _inactiveArrayIndices.resize(_n + 1);
-        for (auto& stack : _inactiveArrayIndices) {
-            stack.reserve(_list_size);
-            stack.clear();
-        }
-
-        _arrayReferenceCount.assign(_n + 1, std::vector<int>(_list_size, 0));
-
-        for (int s = 0; s < _list_size; ++s) {
-            _arrayPointer_Info.at(s) = new uint8_t[n_block_]();
-            for (uint16_t lambda = 0; lambda < _n + 1; ++lambda) {
-                _arrayPointer_P[lambda].at(s) = new double[2 * (1 << (_n - lambda))]();
-                _arrayPointer_C[lambda].at(s) = new int[2 * (1 << (_n - lambda))]();
-                _inactiveArrayIndices[lambda].push_back(s);
-            }
-        }
-
-        for (uint16_t l = 0; l < _list_size; ++l) {
-            _activePath.at(l) = 0;
-            _inactivePathIndices.push_back(l);
-        }
-    }
-
-    int assignInitialPath() {
-        uint16_t  l = _inactivePathIndices.back();
-        _inactivePathIndices.pop_back();
-        _activePath.at(l) = 1;
-        // Associate arrays with path index
-        for (int lambda = 0; lambda < n_pow_ + 1; ++lambda) {
-            int s = pop(_inactiveArrayIndices[lambda]);
-            _pathIndexToArrayIndex.at(lambda).at(l) = s;
-            _arrayReferenceCount.at(lambda).at(s) = 1;
-        }
-        return l;
-    }
-
-    int clonePath(int l) {
-        int l_p = pop(_inactivePathIndices);
-        _activePath.at(l_p) = 1;
-
-        for (int lambda = 0; lambda < n_pow_ + 1; ++lambda) {
-            int s = _pathIndexToArrayIndex.at(lambda).at(l);
-            _pathIndexToArrayIndex.at(lambda).at(l_p) = s;
-            _arrayReferenceCount.at(lambda).at(s)++;
-        }
-        return l_p;
-    }
-
-    void killPath(int l) {
-        _activePath.at(l) = 0;
-        _inactivePathIndices.push_back(l);
-
-        for (uint16_t lambda = 0; lambda < n_pow_ + 1; ++lambda) {
-            uint16_t s = _pathIndexToArrayIndex.at(lambda).at(l);
-            _arrayReferenceCount.at(lambda).at(s)--;
-            if (_arrayReferenceCount.at(lambda).at(s) == 0) {
-                _inactiveArrayIndices.at(lambda).push_back(s);
-            }
-        }
-    }
-
-    double* getArrayPointer_P(int lambda, int  l) {
-        int  s = _pathIndexToArrayIndex.at(lambda).at(l);
-        int s_p;
-        if (_arrayReferenceCount.at(lambda).at(s) == 1) {
-            s_p = s;
-        }
-        else {
-            s_p = pop(_inactiveArrayIndices.at(lambda));
-
-            //copy
-            std::copy(_arrayPointer_P.at(lambda).at(s), _arrayPointer_P.at(lambda).at(s) + (1 << (n_pow_ - lambda + 1)), _arrayPointer_P.at(lambda).at(s_p));
-            std::copy(_arrayPointer_C.at(lambda).at(s), _arrayPointer_C.at(lambda).at(s) + (1 << (n_pow_ - lambda + 1)), _arrayPointer_C.at(lambda).at(s_p));
-
-            _arrayReferenceCount.at(lambda).at(s)--;
-            _arrayReferenceCount.at(lambda).at(s_p) = 1;
-            _pathIndexToArrayIndex.at(lambda).at(l) = s_p;
-        }
-        return _arrayPointer_P.at(lambda).at(s_p);
-    }
-
-    int* PolarCode::getArrayPointer_C(int lambda, int  l) {
-        int  s = _pathIndexToArrayIndex.at(lambda).at(l);
-        int s_p;
-        if (_arrayReferenceCount.at(lambda).at(s) == 1) {
-            s_p = s;
-        }
-        else {
-            s_p = pop(_inactiveArrayIndices.at(lambda));
-
-            std::copy(_arrayPointer_P.at(lambda).at(s), _arrayPointer_P.at(lambda).at(s) + (1 << (n_pow_ - lambda + 1)), _arrayPointer_P.at(lambda).at(s_p));
-            std::copy(_arrayPointer_C.at(lambda).at(s), _arrayPointer_C.at(lambda).at(s) + (1 << (n_pow_ - lambda + 1)), _arrayPointer_C.at(lambda).at(s_p));
-
-            _arrayReferenceCount.at(lambda).at(s)--;
-            _arrayReferenceCount.at(lambda).at(s_p) = 1;
-            _pathIndexToArrayIndex.at(lambda).at(l) = s_p;
-        }
-        return _arrayPointer_C.at(lambda).at(s_p);
-    }
-
-    void recursivelyCalcP(int lambda, int phi) {
-        if (lambda == 0)
-            return;
-        int psi = phi / 2;
-        if ((phi % 2) == 0)
-            recursivelyCalcP(lambda - 1, psi);
-
-        double sigma = 0.0f;
-        for (int l = 0; l < _list_size; ++l) {
-            if (_activePath.at(l) == 0)
-                continue;
-            double* p_lambda = getArrayPointer_P(lambda, l);
-            double* p_lambda_1 = getArrayPointer_P(lambda - 1, l);
-
-            int* c_lambda = getArrayPointer_C(lambda, l);
-            for (int beta = 0; beta < (1 << (n_pow_ - lambda)); ++beta) {
-                if ((phi % 2) == 0) {
-                    p_lambda[2 * beta] = 0.5f * (p_lambda_1[2 * (2 * beta)] * p_lambda_1[2 * (2 * beta + 1)]
-                        + p_lambda_1[2 * (2 * beta) + 1] * p_lambda_1[2 * (2 * beta + 1) + 1]);
-                    p_lambda[2 * beta + 1] = 0.5f * (p_lambda_1[2 * (2 * beta) + 1] * p_lambda_1[2 * (2 * beta + 1)]
-                        + p_lambda_1[2 * (2 * beta)] * p_lambda_1[2 * (2 * beta + 1) + 1]);
-                }
-                else {
-                    int u_p = c_lambda[2 * beta];
-                    p_lambda[2 * beta] = 0.5f * p_lambda_1[2 * (2 * beta) + (u_p % 2)] * p_lambda_1[2 * (2 * beta + 1)];
-                    p_lambda[2 * beta + 1] = 0.5f * p_lambda_1[2 * (2 * beta) + ((u_p + 1) % 2)] * p_lambda_1[2 * (2 * beta + 1) + 1];
-                }
-                sigma = std::max(sigma, p_lambda[2 * beta]);
-                sigma = std::max(sigma, p_lambda[2 * beta + 1]);
-
-
-            }
-        }
-
-        for (int l = 0; l < _list_size; ++l) {
-            if (sigma == 0) // Typically happens because of undeflow
-                break;
-            if (_activePath.at(l) == 0)
-                continue;
-            double* p_lambda = getArrayPointer_P(lambda, l);
-            for (int beta = 0; beta < (1 << (n_pow_ - lambda)); ++beta) {
-                p_lambda[2 * beta] = p_lambda[2 * beta] / sigma;
-                p_lambda[2 * beta + 1] = p_lambda[2 * beta + 1] / sigma;
-            }
-        }
-    }
-
-    void recursivelyUpdateC(int lambda, int phi) {
-
-        int psi = phi >> 1;
-        for (int l = 0; l < _list_size; ++l) {
-            if (_activePath.at(l) == 0)
-                continue;
-            int* c_lambda = getArrayPointer_C(lambda, l);
-            int* c_lambda_1 = getArrayPointer_C(lambda - 1, l);
-            for (int beta = 0; beta < (1 << (n_pow_ - lambda)); ++beta) {
-                c_lambda_1[2 * (2 * beta) + (psi % 2)] = ((c_lambda[2 * beta] + c_lambda[2 * beta + 1]) % 2);
-                c_lambda_1[2 * (2 * beta + 1) + (psi % 2)] = c_lambda[2 * beta + 1];
-            }
-        }
-        if ((psi % 2) == 1)
-            recursivelyUpdateC(lambda - 1, psi);
-
-    }
-
-    void PolarCode::continuePaths_UnfrozenBit(uint16_t phi) {
-
-        std::vector<double> probForks((unsigned long)(2 * _list_size));
-        std::vector<double> probabilities;
-        std::vector<int> contForks((unsigned long)(2 * _list_size), 0);
-
-        int i = 0;
-        for (unsigned l = 0; l < _list_size; ++l) {
-            if (_activePath.at(l) == 0) {
-                probForks.at(2 * l) = NAN;
-                probForks.at(2 * l + 1) = NAN;
-            }
-            else {
-                double* p_m = getArrayPointer_P(n_pow_, l);
-                probForks.at(2 * l) = p_m[0];
-                probForks.at(2 * l + 1) = p_m[1];
-
-                probabilities.push_back(probForks.at(2 * l));
-                probabilities.push_back(probForks.at(2 * l + 1));
-
-                i++;
-            }
-        }
-
-        int rho = std::min(2 * i, _list_size);
-
-        std::sort(probabilities.begin(), probabilities.end(), std::greater<double>());
-
-        double threshold = probabilities.at((unsigned long)(rho - 1));
-        int num_paths_continued = 0;
-
-        for (int l = 0; l < 2 * _list_size; ++l) {
-            if (probForks.at(l) > threshold) {
-                contForks.at(l) = 1;
-                num_paths_continued++;
-            }
-            if (num_paths_continued == rho) {
-                break;
-            }
-        }
-
-        if (num_paths_continued < rho) {
-            for (int l = 0; l < 2 * _list_size; ++l) {
-                if (probForks.at(l) == threshold) {
-                    contForks.at(l) = 1;
-                    num_paths_continued++;
-                }
-                if (num_paths_continued == rho) {
-                    break;
-                }
-            }
-        }
-
-        for (int l = 0; l < _list_size; ++l) {
-            if (_activePath.at(l) == 0)
-                continue;
-            if (contForks.at(2 * l) == 0 && contForks.at(2 * l + 1) == 0)
-                killPath(l);
-        }
-
-        for (unsigned l = 0; l < _list_size; ++l) {
-            if (contForks.at(2 * l) == 0 && contForks.at(2 * l + 1) == 0)
-                continue;
-            int* c_m = getArrayPointer_C(n_pow_, l);
-
-            if (contForks.at(2 * l) == 1 && contForks.at(2 * l + 1) == 1) {
-
-                c_m[(phi % 2)] = 0;
-                int l_p = clonePath(l);
-                c_m = getArrayPointer_C(n_pow_, l_p);
-                c_m[(phi % 2)] = 1;
-
-                std::copy(_arrayPointer_Info.at(l), _arrayPointer_Info.at(l) + phi, _arrayPointer_Info.at(l_p));
-                _arrayPointer_Info.at(l)[phi] = 0;
-                _arrayPointer_Info.at(l_p)[phi] = 1;
-
-            }
-            else {
-                if (contForks.at(2 * l) == 1) {
-                    c_m[(phi % 2)] = 0;
-                    _arrayPointer_Info.at(l)[phi] = 0;
-                }
-                else {
-                    c_m[(phi % 2)] = 1;
-                    _arrayPointer_Info.at(l)[phi] = 1;
-                }
-            }
-        }
-
-    }
-
-public:
-    int n_pow_, n_block_, k_;
-    std::vector<bool> is_info_bit_;
-
-    int _list_size = 1;
-    std::vector<int> _inactivePathIndices;
-    std::vector<int> _activePath;
-    std::vector<std::vector<double*>> _arrayPointer_P;
-    std::vector<std::vector<int*>> _arrayPointer_C;
-    std::vector<uint8_t*> _arrayPointer_Info;
-    std::vector<std::vector<int>> _pathIndexToArrayIndex;
-    std::vector<std::vector<int>> _inactiveArrayIndices;
-    std::vector<std::vector<int>> _arrayReferenceCount;
+struct PolarRes {
+    int list_size_;
+    int snr_db_10_;
+    int fer_;
 };
 
 int main() {
+    // 8, 4, 4
+    int n = 10;
+    int info_length = 512;
+
     std::random_device rd{};
     std::mt19937 gen{ rd() };
+    int iterations = 10000;
+    std::mutex vec_mutex;
+    std::vector<std::future<void>> tasks;
+    std::map<int, std::map<int, int>> results;
+    for (int snr_db_10 = -10; snr_db_10 <= 40; snr_db_10 += 5) {
+        tasks.push_back(std::async([=, &results, &vec_mutex]() {
+            std::random_device rd{};
+            std::mt19937 gen{ rd() };
+            PolarCode code(n, info_length, 0.5);
+            int fer = 0;
+            AWGNChannel channel = AWGNChannelFromSNR(snr_db_10 / 10.);
+            std::vector<unsigned char> input(512);
+            std::vector<double> transmitted;
+            std::vector<std::array<double, 2>> probabilities;
+            std::vector<unsigned char> codeword, decoded;
+            for (int iter = 0; iter < iterations; iter++) {
+                for (unsigned i = 0; i < 512; i++) {
+                    input[i] = gen() & 1U;
+                }
+                code.Encode(input, codeword);
+                channel.transmit(codeword, transmitted);
+                channel.probability(transmitted, probabilities);
+                bool prev_decoded = true;
+                for (int list_size : {1, 2, 4, 8, 16}) {
+                    code.Decode(probabilities, list_size, decoded);
+                    std::lock_guard lock(vec_mutex);
+                    results[list_size][snr_db_10] = results[list_size][snr_db_10];
+                    bool this_decoded = decoded == input;
+                    if (!this_decoded && prev_decoded) {
+                        std::cerr << "Failed to decode with bigger list\n";
+                    }
+                    if (!this_decoded) {
+                        results[list_size][snr_db_10]++;
+                    }
+                    prev_decoded = this_decoded;
+                }
+            }
+            }));
+    }
+    for (auto& task : tasks) {
+        task.wait();
+    }
 
-    PolarCode pcode(3, 4, 0.5);
-    std::vector<unsigned char> in(pcode.k_), coded, decoded;
-    for(auto & x : in){
-        x = 1;
+    for (auto& [list, result] : results) {
+        for (auto& [snr, fer] : result) {
+            std::cout << list << "\t" << 0.1 * snr << "\t" << 1. * (fer) / iterations << "\n";
+        }
+        std::cout << "\n\n";
     }
-    pcode.Encode(in, coded);
-    pcode.Decode(coded, decoded);
-    if (in != decoded) {
-        std::cout << "NOT DECODED";
-    }
+
     return 0;
     matrix code_gen_matrix;
     std::vector<std::pair<int, int>> codes = { {3,1}, {3,2}, {4,2}, {5,2}, {5,3}, {6,2}, { 6, 3 }, {6,4}
