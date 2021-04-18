@@ -49,6 +49,7 @@ private:
 
     std::vector<bool> is_frozen_bit_;
     std::vector<int> channels_ordered_by_rel_;
+    std::vector<int> info_channels_;
     std::vector<int> bit_rev_sorted_ids_;
 
     std::vector<uint8_t> codeword_, codeword_buf_;
@@ -139,6 +140,8 @@ void PolarCode::InitPolarCodeBhatt() {
         channels_ordered_by_rel_.end(),
         [&](size_t i1, size_t i2) { return channel_vec[bit_rev_sorted_ids_[i1]] < channel_vec[bit_rev_sorted_ids_[i2]]; });
 
+    info_channels_.assign(channels_ordered_by_rel_.begin(), channels_ordered_by_rel_.begin() + info_size_);
+    std::sort(info_channels_.begin(), info_channels_.end());
     for (int i = 0; i < info_size_; i++) {
         is_frozen_bit_[channels_ordered_by_rel_[i]] = false;
     }
@@ -180,6 +183,8 @@ void PolarCode::InitPolarCodeGaussApprox(double noise_sigma) {
         channels_ordered_by_rel_.end(),
         [&](size_t i1, size_t i2) { return channel_rel_log[bit_rev_sorted_ids_[i1]] > channel_rel_log[bit_rev_sorted_ids_[i2]]; });
 
+    info_channels_.assign(channels_ordered_by_rel_.begin(), channels_ordered_by_rel_.begin() + info_size_);
+    std::sort(info_channels_.begin(), info_channels_.end());
     for (int i = 0; i < info_size_; i++) {
         is_frozen_bit_[channels_ordered_by_rel_[i]] = false;
     }
@@ -192,7 +197,7 @@ void PolarCode::Encode(const std::vector<uint8_t>& info_bits, std::vector<uint8_
     codeword.assign(block_size_, 0);
 
     for (int i = 0; i < info_size_; i++) {
-        codeword[channels_ordered_by_rel_[i]] = info_bits[i];
+        codeword[info_channels_[i]] = info_bits[i];
     }
 
     info_bits_ = std::move(info_bits);
@@ -286,7 +291,7 @@ void PolarCode::DecodeSCL(std::vector<uint8_t>& codeword) {
 
     std::vector<uint8_t> decoded_info_bits(info_size_);
     for (int beta = 0; beta < info_size_; beta++) {
-        decoded_info_bits[beta] = probable_padded_bits[channels_ordered_by_rel_[beta]];
+        decoded_info_bits[beta] = probable_padded_bits[info_channels_[beta]];
     }
 
     if (probable_padded_bits != bits_padded_ && info_bits_ == decoded_info_bits) {
@@ -315,7 +320,7 @@ void PolarCode::GetInfoBitsFromCodeword(const std::vector<uint8_t>& codeword, st
     BitReverseArray(c0_selected, bit_rev_sorted_ids_);
     info_bits.resize(info_size_);
     for (int beta = 0; beta < info_size_; beta++)
-        info_bits[beta] = c0_selected[channels_ordered_by_rel_[beta]];
+        info_bits[beta] = c0_selected[info_channels_[beta]];
 }
 
 void PolarCode::initializeDataStructures() {
