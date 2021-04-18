@@ -199,7 +199,7 @@ matrix GenerateTransposedCheckMatrix(const matrix& gen_matrix, int n, int k) {
 class AWGNChannel {
 public:
     explicit AWGNChannel(float noise_sigma) : gen_(std::random_device{}()), noise_(0., noise_sigma),
-        sqrt_2pi_N0_inv_(1. / (std::sqrt(2 * M_PI) * noise_sigma)), N0_(noise_sigma* noise_sigma * 2) {
+        sqrt_2pi_N0_inv_(1. / (std::sqrt(2 * M_PI) * noise_sigma)), N0_(noise_sigma* noise_sigma * 2), two_on_sq_sigma_(2 / (noise_sigma * noise_sigma)) {
     }
 
     template<typename Float>
@@ -207,6 +207,17 @@ public:
         result.resize(data.size());
         for (auto i = 0U; i < data.size(); i++) {
             result[i] = noise_(gen_) + (data[i] == 1 ? 1.f : -1.f);
+        }
+    }
+
+    double llr(double signal) {
+        return signal * two_on_sq_sigma_;
+    }
+
+    void llr(const std::vector<double>& transmitted, std::vector<double>& llrs) {
+        llrs.resize(transmitted.size());
+        for (int i = 0; i < transmitted.size(); i++) {
+            llrs[i] = llr(transmitted[i]);
         }
     }
 
@@ -246,6 +257,7 @@ private:
     std::normal_distribution<float> noise_;
     double sqrt_2pi_N0_inv_;
     double N0_;
+    double two_on_sq_sigma_;
 };
 
 //snr == ES/N0
