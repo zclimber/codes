@@ -664,8 +664,8 @@ size_t PolarCode::findMostProbablePath() {
 void PolarCode::InitBitReversedIds() {
     for (int i = 0; i < block_size_; i++) {
         size_t to_be_reversed = i;
-        bit_rev_sorted_ids_[i] = (uint16_t)((to_be_reversed & 1) << (n_pow_ - 1));
-        for (size_t j = (uint8_t)(n_pow_ - 1); j; --j) {
+        bit_rev_sorted_ids_[i] = (to_be_reversed & 1) << (n_pow_ - 1);
+        for (size_t j = n_pow_ - 1; j > 0; j--) {
             to_be_reversed >>= 1;
             bit_rev_sorted_ids_[i] += (to_be_reversed & 1) << (j - 1);
         }

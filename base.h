@@ -195,6 +195,52 @@ matrix GenerateTransposedCheckMatrix(const matrix& gen_matrix, int n, int k) {
     return resres;
 }
 
+matrix InverseMatrix(const matrix& matrix_to_inverse) {
+    if (matrix_to_inverse.size() != matrix_to_inverse[0].size()) {
+        //std::cout << "Inversing not square matrix";
+        throw std::exception("Inversing not square matrix");
+    }
+    int n = matrix_to_inverse.size();
+    matrix res(n);
+    for (int i = 0; i < n; i++) {
+        res[i].resize(n, 0);
+        res[i][i] = 1;
+    }
+
+    matrix temp(matrix_to_inverse);
+    for (int i = 0; i < n; i++) {
+        int pos = -1;
+        for (int j = 0; j < n; j++) {
+            if (temp[i][j]) {
+                pos = j;
+                break;
+            }
+        }
+        if (pos == -1) {
+            //std::cout << "Inversing not full rank matrix";
+            throw std::exception("Inversing not full rank matrix");
+        }
+        swap(temp[i], temp[pos]);
+        swap(res[i], res[pos]);
+        for (int j = 0; j < n; j++) {
+            if (temp[j][i] && j != i) {
+                XorVectors(temp[j], temp[i]);
+                XorVectors(res[j], res[i]);
+            }
+        }
+    }
+    std::vector<uint8_t> check;
+    for (int i = 0; i < n; i++) {
+        MultiplyVectorByMatrix(res[i], matrix_to_inverse, check);
+        for (int j = 0; j < n; j++) {
+            if (check[j] != (i == j)) {
+                throw std::exception("Wrong inversing result");
+            }
+        }
+    }
+    return res;
+}
+
 // Es = 1., N0 = sigma * sigma * 2;
 class AWGNChannel {
 public:
@@ -211,10 +257,11 @@ public:
     }
 
     double llr(double signal) {
-        return signal * two_on_sq_sigma_;
+        return -signal * two_on_sq_sigma_;
     }
 
-    void llr(const std::vector<double>& transmitted, std::vector<double>& llrs) {
+    template<typename Float>
+    void llr(const std::vector<Float>& transmitted, std::vector<double>& llrs) {
         llrs.resize(transmitted.size());
         for (int i = 0; i < transmitted.size(); i++) {
             llrs[i] = llr(transmitted[i]);
@@ -248,6 +295,10 @@ public:
         for (int i = 0; i < transmitted.size(); i++) {
             prob[i] = probability(bit, transmitted[i]);
         }
+    }
+
+    double sigma() {
+        return noise_.sigma();
     }
 
     friend AWGNChannel AWGNChannelFromSNR(double snr_db);

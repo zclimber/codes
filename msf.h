@@ -6,7 +6,7 @@
 
 #include "base.h"
 
-void GenerateMinimalSpanMatrixForwardPass(matrix &gen_matrix, int n, int k) {
+void GenerateMinimalSpanMatrixForwardPass(matrix &gen_matrix, int n, int k, matrix* key_matrix = nullptr) {
     int current_base_row = 0;
     for (int column = 0; column < n && current_base_row < k; column++) {
         int found_base = k;
@@ -14,18 +14,24 @@ void GenerateMinimalSpanMatrixForwardPass(matrix &gen_matrix, int n, int k) {
             if (gen_matrix[i][column] == 1) {
                 found_base = i;
                 swap(gen_matrix[i], gen_matrix[current_base_row]);
+                if (key_matrix) {
+                    swap(key_matrix->at(i), key_matrix->at(current_base_row));
+                }
                 current_base_row++;
             }
         }
         for (auto i = found_base + 1; i < k; i++) {
             if (gen_matrix[i][column] == 1) {
                 XorVectors(gen_matrix[i], gen_matrix[current_base_row - 1]);
+                if (key_matrix) {
+                    XorVectors(key_matrix->at(i), key_matrix->at(current_base_row - 1));
+                }
             }
         }
     }
 }
 
-void GenerateMinimalSpanMatrixBackwardPass(matrix &gen_matrix, int n, int k) {
+void GenerateMinimalSpanMatrixBackwardPass(matrix &gen_matrix, int n, int k, matrix* key_matrix = nullptr) {
     std::vector<unsigned char> found_rows(k);
     int found_ending_rows = 0;
     for (int base = n - 1; base >= 0 && found_ending_rows < k; base--) {
@@ -44,14 +50,23 @@ void GenerateMinimalSpanMatrixBackwardPass(matrix &gen_matrix, int n, int k) {
                 continue;
             if (gen_matrix[i][base] == 1) {
                 XorVectors(gen_matrix[i], gen_matrix[found_index]);
+                if (key_matrix) {
+                    XorVectors(key_matrix->at(i), key_matrix->at(found_index));
+                }
             }
         }
     }
 }
 
-void GenerateMinimalSpanMatrix(matrix &gen_matrix, int n, int k) {
-    GenerateMinimalSpanMatrixForwardPass(gen_matrix, n, k);
-    GenerateMinimalSpanMatrixBackwardPass(gen_matrix, n, k);
+void GenerateMinimalSpanMatrix(matrix &gen_matrix, int n, int k, matrix *key_matrix = nullptr) {
+    if (key_matrix) {
+        key_matrix->assign(k, std::vector<uint8_t>(k, 0));
+        for (int i = 0; i < k; i++) {
+            (*key_matrix)[i][i] = 1;
+        }
+    }
+    GenerateMinimalSpanMatrixForwardPass(gen_matrix, n, k, key_matrix);
+    GenerateMinimalSpanMatrixBackwardPass(gen_matrix, n, k, key_matrix);
 }
 
 void

@@ -135,35 +135,52 @@ unsigned long long vit_comps = 0, vit_adds = 0;
 class ViterbiSoftDecoder {
 public:
     explicit ViterbiSoftDecoder(const matrix &orig_gen_matrix) {
-        gen_matrix = orig_gen_matrix;
-        for (auto row : gen_matrix) {
-            row_starts.push_back(std::find(row.begin(), row.end(), 1) - row.begin());
+        gen_matrix_ = orig_gen_matrix;
+        GenerateMinimalSpanMatrix(gen_matrix_, orig_gen_matrix[0].size(), orig_gen_matrix.size(), &info_transform_matrix_);
+        if (gen_matrix_ == orig_gen_matrix) {
+            info_transform_matrix_.clear();
         }
-        trellis = CreateCodeTrellisFromGenMatrix(orig_gen_matrix);
+        else {
+            info_transform_matrix_inverse_ = InverseMatrix(info_transform_matrix_);
+        }
+        for (auto row : gen_matrix_) {
+            row_starts_.push_back(std::find(row.begin(), row.end(), 1) - row.begin());
+        }
+        trellis_ = CreateCodeTrellisFromGenMatrix(orig_gen_matrix);
+    }
+
+    void Encode(const std::vector<uint8_t>& info, std::vector<uint8_t>& encoded) {
+        if (info_transform_matrix_.empty()) {
+            MultiplyVectorByMatrix(info, gen_matrix_, encoded);
+        }
+        else {
+            MultiplyVectorByMatrix(info, info_transform_matrix_inverse_, temp_vector_);
+            MultiplyVectorByMatrix(temp_vector_, gen_matrix_, encoded);
+        }
     }
 
     float DecodeInputToCodeword(const std::vector<float> &data, std::vector<unsigned char> &res) const {
         res.resize(data.size());
         int current_symbol_num = 0;
         float current_symbol_value;
-        for (int i = 1; i < trellis.data.size(); i++) {
-            if (i == trellis.layer_end[current_symbol_num]) {
+        for (int i = 1; i < trellis_.data.size(); i++) {
+            if (i == trellis_.layer_end[current_symbol_num]) {
                 current_symbol_num++;
                 current_symbol_value = data[current_symbol_num - 1];
             }
-            BlockCodeTrellis::TrellisCell &cur = trellis.data[i];
+            BlockCodeTrellis::TrellisCell &cur = trellis_.data[i];
             vit_adds++;
             if (cur.prev_cells[0] == -1) {
                 cur.selected_cell = 1;
-                cur.self_value = trellis.data[cur.prev_cells[1]].self_value + current_symbol_value;
+                cur.self_value = trellis_.data[cur.prev_cells[1]].self_value + current_symbol_value;
             } else if (cur.prev_cells[1] == -1) {
                 cur.selected_cell = 0;
-                cur.self_value = trellis.data[cur.prev_cells[0]].self_value - current_symbol_value;
+                cur.self_value = trellis_.data[cur.prev_cells[0]].self_value - current_symbol_value;
             } else {
                 vit_adds++;
                 vit_comps++;
-                float value_0 = trellis.data[cur.prev_cells[0]].self_value - current_symbol_value;
-                float value_1 = trellis.data[cur.prev_cells[1]].self_value + current_symbol_value;
+                float value_0 = trellis_.data[cur.prev_cells[0]].self_value - current_symbol_value;
+                float value_1 = trellis_.data[cur.prev_cells[1]].self_value + current_symbol_value;
                 if (value_0 >= value_1) {
                     cur.self_value = value_0;
                     cur.selected_cell = 0;
@@ -173,29 +190,33 @@ public:
                 }
             }
         }
-        int cur_cell = trellis.layer_start.back();
+        int cur_cell = trellis_.layer_start.back();
         for (int sym = (int) data.size() - 1; sym >= 0; sym--) {
-            res[sym] = trellis.data[cur_cell].selected_cell;
-            cur_cell = trellis.data[cur_cell].prev_cells[res[sym]];
+            res[sym] = trellis_.data[cur_cell].selected_cell;
+            cur_cell = trellis_.data[cur_cell].prev_cells[res[sym]];
         }
-        return trellis.data.back().self_value;
+        return trellis_.data.back().self_value;
     }
 
     void DecodeMessageFromCodeword(std::vector<unsigned char> &data, std::vector<unsigned char> &res) {
-        res.resize(gen_matrix.size());
-        for (int row = 0; row < gen_matrix.size(); row++) {
-            res[row] = data[row_starts[row]];
+        res.resize(gen_matrix_.size());
+        for (int row = 0; row < gen_matrix_.size(); row++) {
+            res[row] = data[row_starts_[row]];
             if (res[row])
-                XorVectors(data, gen_matrix[row]);
+                XorVectors(data, gen_matrix_[row]);
         }
     }
 
-    std::vector<unsigned char> decode(const std::vector<float> &data, float &probability_log) const {
+    std::vector<unsigned char> decode(const std::vector<float> &data) const {
         std::vector<unsigned char> res;
+        DecodeInputToCodeword(data, res);
         return res;
     }
 
-    matrix gen_matrix;
-    std::vector<int> row_starts;
-    BlockCodeTrellis trellis;
+    matrix gen_matrix_;
+    matrix info_transform_matrix_;
+    matrix info_transform_matrix_inverse_;
+    std::vector<uint8_t> temp_vector_;
+    std::vector<int> row_starts_;
+    BlockCodeTrellis trellis_;
 };
