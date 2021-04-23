@@ -12,6 +12,8 @@
 #include <vector>
 #include <array>
 
+//#define LLR
+
 class PolarCode {
 public:
     PolarCode(size_t num_layers, size_t info_length, double epsilon) :
@@ -32,6 +34,8 @@ public:
 
     void InitPolarCodeGaussApprox(double noise_sigma);
 
+    void SetInfoBits(const std::vector<int>& bits);
+
     size_t GetCodeInfoSize() const {
         return info_size_;
     }
@@ -40,7 +44,7 @@ public:
         return block_size_;
     }
 
-private:
+public:
 
     size_t n_pow_;
     size_t info_size_;
@@ -100,6 +104,7 @@ private:
 
     void continuePaths_FrozenBit(size_t phi);
     void PopulateContForks();
+    void PopulateContForksLLR();
     void continuePaths_UnfrozenBit(size_t phi);
 
     size_t findMostProbablePath();
@@ -122,6 +127,13 @@ void BitReverseArray(std::vector<uint8_t>& vector_to_reverse, const std::vector<
         bit_reverse_temp_[i] = vector_to_reverse[bits_reversed_order[i]];
     }
     swap(bit_reverse_temp_, vector_to_reverse);
+}
+
+void PolarCode::SetInfoBits(const std::vector<int>& bits) {
+    is_frozen_bit_.assign(block_size_, true);
+    for (auto bit_id : bits) {
+        is_frozen_bit_[bit_id] = false;
+    }
 }
 
 void PolarCode::InitPolarCodeBhatt() {
@@ -149,12 +161,7 @@ void PolarCode::InitPolarCodeBhatt() {
 
     info_channels_.assign(channels_ordered_by_rel_.begin(), channels_ordered_by_rel_.begin() + info_size_);
     std::sort(info_channels_.begin(), info_channels_.end());
-    for (int i = 0; i < info_size_; i++) {
-        is_frozen_bit_[channels_ordered_by_rel_[i]] = false;
-    }
-    for (int i = info_size_; i < block_size_; i++) {
-        is_frozen_bit_[channels_ordered_by_rel_[i]] = true;
-    }
+    SetInfoBits(info_channels_);
 }
 
 double XiFuncFast(double x) {
@@ -192,12 +199,7 @@ void PolarCode::InitPolarCodeGaussApprox(double noise_sigma) {
 
     info_channels_.assign(channels_ordered_by_rel_.begin(), channels_ordered_by_rel_.begin() + info_size_);
     std::sort(info_channels_.begin(), info_channels_.end());
-    for (int i = 0; i < info_size_; i++) {
-        is_frozen_bit_[channels_ordered_by_rel_[i]] = false;
-    }
-    for (int i = info_size_; i < block_size_; i++) {
-        is_frozen_bit_[channels_ordered_by_rel_[i]] = true;
-    }
+    SetInfoBits(info_channels_);
 }
 
 void PolarCode::Encode(const std::vector<uint8_t>& info_bits, std::vector<uint8_t>& codeword) {
@@ -276,8 +278,11 @@ void PolarCode::Decode(const std::vector<double>& llrs, size_t list_size, std::v
 
 void PolarCode::DecodeSCL(std::vector<uint8_t>& codeword) {
     for (size_t phi = 0; phi < block_size_; phi++) {
-        recursivelyCalcP(n_pow_, phi);
+#ifdef LLR
         recursivelyCalcLLR(n_pow_, phi);
+#else
+        recursivelyCalcP(n_pow_, phi);
+#endif
 
         if (is_frozen_bit_[phi] == 1)
             continuePaths_FrozenBit(phi);
@@ -428,9 +433,12 @@ size_t PolarCode::GetArrayPointerIndex(size_t lambda, size_t l) {
     else {
         size_t s_p = stack_pop(inactive_array_indexes_[lambda]);
 
-        arrays_P_[lambda][s_p] = arrays_P_[lambda][s];
-        arrays_C_[lambda][s_p] = arrays_C_[lambda][s];
+#ifdef LLR
         arrays_LLR_[lambda][s_p] = arrays_LLR_[lambda][s];
+#else
+        arrays_P_[lambda][s_p] = arrays_P_[lambda][s];
+#endif
+        arrays_C_[lambda][s_p] = arrays_C_[lambda][s];
 
         array_references_count_[lambda][s]--;
         array_references_count_[lambda][s_p] = 1;
@@ -564,11 +572,22 @@ void PolarCode::PopulateContForks() {
 
     if (rho != probabilities.size()) {
         std::nth_element(probabilities.begin(), probabilities.begin() + rho, probabilities.end(), std::greater<>());
+    }
+
+    for (int i = 0; i < rho; i++) {
+        int fork_id = probabilities[i].second;
+        contForks[fork_id / 2][fork_id % 2] = true;
+    }
+}
+
+void PolarCode::PopulateContForksLLR() {
+    size_t rho = std::min(list_size_, probabilities_LLR_.size());
+
+    if (rho != probabilities_LLR_.size()) {
         std::nth_element(probabilities_LLR_.begin(), probabilities_LLR_.begin() + rho, probabilities_LLR_.end());
     }
 
     for (int i = 0; i < rho; i++) {
-        // change to probs_llr_
         int fork_id = probabilities_LLR_[i].second;
         contForks[fork_id / 2][fork_id % 2] = true;
     }
@@ -581,17 +600,23 @@ void PolarCode::continuePaths_UnfrozenBit(size_t phi) {
 
     for (int l = 0; l < list_size_; l++) {
         if (active_path_[l]) {
-            auto& p_m = getArrayPointer_P(n_pow_, l);
-            probabilities.emplace_back(p_m[0][0], l * 2);
-            probabilities.emplace_back(p_m[0][1], l * 2 + 1);
-
+#ifdef LLR
             auto& llr_p = getArrayPointer_LLR(n_pow_, l);
             probabilities_LLR_.emplace_back(path_metric_[l] + std::log(1 + std::exp(-llr_p[0])), l * 2);
             probabilities_LLR_.emplace_back(path_metric_[l] + std::log(1 + std::exp(+llr_p[0])), l * 2 + 1);
+#else
+            auto& p_m = getArrayPointer_P(n_pow_, l);
+            probabilities.emplace_back(p_m[0][0], l * 2);
+            probabilities.emplace_back(p_m[0][1], l * 2 + 1);
+#endif
         }
     }
 
+#ifdef LLR
+    PopulateContForksLLR();
+#else
     PopulateContForks();
+#endif
 
     for (int l = 0; l < list_size_; l++) {
         if (!active_path_[l])
@@ -613,9 +638,11 @@ void PolarCode::continuePaths_UnfrozenBit(size_t phi) {
             auto& c_m_second = getArrayPointer_C(n_pow_, l_p);
             c_m_second[0][phi % 2] = 1;
 
+#ifdef LLR
             auto& llr_p = getArrayPointer_LLR(n_pow_, l);
             path_metric_[l] += std::log(1 + std::exp(-llr_p[0]));
             path_metric_[l_p] += std::log(1 + std::exp(llr_p[0]));
+#endif
 
             deduced_padded_bits_[l_p] = deduced_padded_bits_[l];
             deduced_padded_bits_[l][phi] = 0;
@@ -625,14 +652,18 @@ void PolarCode::continuePaths_UnfrozenBit(size_t phi) {
             if (contForks[l][0] == 1) {
                 c_m[0][phi % 2] = 0;
                 deduced_padded_bits_[l][phi] = 0;
+#ifdef LLR
                 auto& llr_p = getArrayPointer_LLR(n_pow_, l);
                 path_metric_[l] += std::log(1 + std::exp(-llr_p[0]));
+#endif
             }
             else {
                 c_m[0][phi % 2] = 1;
                 deduced_padded_bits_[l][phi] = 1;
+#ifdef LLR
                 auto& llr_p = getArrayPointer_LLR(n_pow_, l);
                 path_metric_[l] += std::log(1 + std::exp(llr_p[0]));
+#endif
             }
         }
     }
@@ -641,21 +672,23 @@ void PolarCode::continuePaths_UnfrozenBit(size_t phi) {
 
 size_t PolarCode::findMostProbablePath() {
     int l_p = 0;
-    //double p_p1 = 0;
+    double p_p1 = 0;
     double p_llr = std::numeric_limits<double>::max();
     for (int l = 0; l < list_size_; l++) {
         if (active_path_[l]) {
+#ifdef LLR
             if (path_metric_[l] < p_llr) {
                 p_llr = path_metric_[l];
                 l_p = l;
             }
-            //auto& c_m = getArrayPointer_C(n_pow_, l);
-            //auto& p_m = getArrayPointer_P(n_pow_, l);
-            //if (p_p1 > path_metric_[l]) {// p_m[0][c_m[0][1]]) {
-                //l_p = l;
-                //p_p1 = p_m[0][c_m[0][1]];
-                //p_p1 = path_metric_[l];
-            //}
+#else
+            auto& c_m = getArrayPointer_C(n_pow_, l);
+            auto& p_m = getArrayPointer_P(n_pow_, l);
+            if (p_p1 > p_m[0][c_m[0][1]]) {
+                l_p = l;
+                p_p1 = p_m[0][c_m[0][1]];
+            }
+#endif
         }
     }
     return l_p;
