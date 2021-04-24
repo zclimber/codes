@@ -571,14 +571,184 @@ struct PolarRes {
     int fer_;
 };
 
+int max_runs = 1000;
+int report_runs = 100;
+std::vector<std::vector<double>> get_bler_quick(int n, int info_size, double design_epsilon, const std::vector<double>& ebno_vec,
+    const std::vector<int>& list_size_vec) {
+
+    std::vector<PolarCode> codes;
+    for (auto x : list_size_vec) {
+        codes.push_back(PolarCode(n, info_size, design_epsilon));
+        //codes.back().InitInnerTrellisDecoder();
+    }
+    int block_size = 1 << n;
+    int max_err = 1000;
+
+    std::vector<std::vector<double>> bler(list_size_vec.size(), std::vector<double>(ebno_vec.size(), 0));
+    std::vector<std::vector<int>> num_err(list_size_vec.size(), std::vector<int>(ebno_vec.size(), 0));
+    std::vector<std::vector<int>> num_run(list_size_vec.size(), std::vector<int>(ebno_vec.size(), 0));
+
+    std::vector<uint8_t> info_bits(info_size);
+    std::vector<uint8_t> coded_bits;
+    std::vector<double> transitted(block_size, 0);
+    std::vector<std::array<double, 2>> probabilities(block_size);
+    std::vector<double> llrs(block_size);
+    std::vector<double> llrs_calc(block_size);
+    std::vector<uint8_t> decoded_info_bits;
+
+    std::mt19937 gen{};
+
+    auto start = std::chrono::high_resolution_clock::now();
+
+    int total_runs = 0;
+    std::cout << "Using " << max_runs << " iterations per item" << std::endl;
+    for (int ebno_i = 0; ebno_i < ebno_vec.size(); ebno_i++) {
+        auto ebno = ebno_vec[ebno_i];
+        auto channel = AWGNChannelFromEBN0(ebno, block_size, info_size);
+        for (int run = 1; run <= max_runs; run++) {
+            total_runs++;
+            if ((total_runs % report_runs) == 0) {
+                auto now = std::chrono::high_resolution_clock::now();
+                auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+                std::cout << "Running iteration " << total_runs << "; time elapsed = " << duration << " seconds" << std::endl;
+            }
+            for (auto& bit : info_bits)
+                bit = gen() % 2;
+
+            codes[0].Encode(info_bits, coded_bits);
+
+            channel.transmit(coded_bits, transitted);
+            channel.probability(transitted, probabilities);
+            channel.llr(transitted, llrs);
+            for (int i = 0; i < block_size; i++) {
+                llrs_calc[i] = std::log(probabilities[i][0] / probabilities[i][1]);
+            }
+
+            for (int list_i = 0; list_i < list_size_vec.size(); list_i++) {
+                auto list_size = list_size_vec[list_i];
+#ifdef LLR
+                codes[list_i].Decode(llrs, list_size, decoded_info_bits);
+#else
+                codes[list_i].Decode(probabilities, list_size, decoded_info_bits);
+#endif
+                num_run[list_i][ebno_i]++;
+                if (info_bits != decoded_info_bits)
+                    num_err[list_i][ebno_i]++;
+            }
+        }
+    }
+    auto now = std::chrono::high_resolution_clock::now();
+    auto duration = std::chrono::duration_cast<std::chrono::seconds>(now - start).count();
+    std::cout << "Run simulation in " << duration << " seconds" << std::endl;
+
+    for (int list_i = 0; list_i < list_size_vec.size(); list_i++) {
+        for (int ebno_i = 0; ebno_i < ebno_vec.size(); ebno_i++) {
+            bler[list_i][ebno_i] = (double)num_err[list_i][ebno_i] / num_run[list_i][ebno_i];
+        }
+    }
+    return bler;
+}
+
+void run_get_bler() {
+    int n = 11;
+    int info_length = 1 << (n - 1);
+
+    double design_epsilon = 0.5;
+
+    double ebno_log_min = 1.00;
+    double ebno_log_max = 2.01;
+    double ebno_log_increment = 0.25;
+    std::vector<double> ebno_vec;
+
+    for (double ebno_log = ebno_log_min; ebno_log <= ebno_log_max; ebno_log += ebno_log_increment)
+        ebno_vec.push_back(ebno_log);
+
+    std::vector<int> list_size_vec{ 1, 2, 4, 8, 32 };
+
+    auto bler = get_bler_quick(n, info_length, design_epsilon, ebno_vec, list_size_vec);
+
+    std::cout << "Done\n";
+
+    for (int ebno_i = 0; ebno_i < ebno_vec.size(); ebno_i++) {
+        std::cout << std::fixed << std::setprecision(3) << ebno_vec[ebno_i] << "\t \t";
+        for (int list_i = 0; list_i < list_size_vec.size(); list_i++) {
+            std::cout << std::fixed << std::setprecision(6) << bler[list_i][ebno_i] << "\t";
+        }
+        std::cout << std::endl;
+    }
+}
+
 int main() {
+    run_get_bler();
+    //for (int snr_db_10 = -10; snr_db_10 <= 40; snr_db_10 += 5) {
+    //    AWGNChannel channel = AWGNChannelFromSNR(snr_db_10 / 10.);
+    //    std::cout << snr_db_10 / 10. << ": " << channel.sigma() << "\n";
+    //}
+    return 0;
+
+    int mini_info = 5;
+    std::vector<unsigned char> info(8), coded;
+    matrix polar_code_base;
+    PolarCode code(3, mini_info, .5);
+    for (int i = 0; i < mini_info; i++) {
+        info.assign(mini_info, 0);
+        info[i] = 1;
+        code.Encode(info, coded);
+        polar_code_base.push_back(coded);
+        for (auto b : coded) {
+            std::cout << int(b) << " ";
+        }
+        std::cout << "\n";
+    }
+    std::cout << "\n";
+    ViterbiSoftDecoder vsd(polar_code_base);
+    for (int i = 0; i < mini_info; i++) {
+        info.assign(mini_info, 0);
+        info[i] = 1;
+        vsd.Encode(info, coded);
+        for (auto b : coded) {
+            std::cout << int(b) << " ";
+        }
+        std::cout << "\n";
+    }
+
+    //for(auto i : code.info_channels_)
+    //std::cout << i << " ";
+    //std::cout << "\n";
+
+    std::vector<uint8_t> in(mini_info), codeword, out_polar, out_id;
+    std::vector<float> transmitted;
+    std::vector<double> llrs;
+    std::random_device rd{};
+    std::mt19937 gen{ rd() };
+
+    for (int iter = 1;; iter++) {
+        if (iter % 1000 == 0) {
+            std::cout << iter << "\n";
+        }
+        for (auto& bit : in) {
+            bit = gen() % 2;
+        }
+        code.Encode(in, codeword);
+        AWGNChannel channel = AWGNChannelFromSNR(1.);
+        channel.transmit(codeword, transmitted);
+        //channel.probability(transmitted, probabilities);
+        channel.llr(transmitted, llrs);
+        code.Decode(llrs, 32, out_polar);
+        vsd.DecodeInputToCodeword(transmitted, out_id);
+        if (out_id == codeword && out_polar != in) {
+            std::cerr << "Worse than ML decoder\n";
+        }
+    }
+
+    return 0;
     // 8, 4, 4
     int n = 10;
     int info_length = 512;
 
-    std::random_device rd{};
-    std::mt19937 gen{ rd() };
-    int iterations = 10000;
+    //std::random_device rd{};
+    //std::mt19937 gen{ rd() };
+    int iterations = 1000;
     std::mutex vec_mutex;
     std::vector<std::future<void>> tasks;
     std::map<int, std::map<int, int>> results;
@@ -591,6 +761,7 @@ int main() {
             AWGNChannel channel = AWGNChannelFromSNR(snr_db_10 / 10.);
             std::vector<unsigned char> input(512);
             std::vector<double> transmitted;
+            std::vector<double> llrs;
             std::vector<std::array<double, 2>> probabilities;
             std::vector<unsigned char> codeword, decoded;
             for (int iter = 0; iter < iterations; iter++) {
@@ -600,9 +771,10 @@ int main() {
                 code.Encode(input, codeword);
                 channel.transmit(codeword, transmitted);
                 channel.probability(transmitted, probabilities);
-                bool prev_decoded = true;
+                channel.llr(transmitted, llrs);
+                bool prev_decoded = false;
                 for (int list_size : {1, 2, 4, 8, 16}) {
-                    code.Decode(probabilities, list_size, decoded);
+                    code.Decode(llrs, list_size, decoded);
                     std::lock_guard lock(vec_mutex);
                     results[list_size][snr_db_10] = results[list_size][snr_db_10];
                     bool this_decoded = decoded == input;

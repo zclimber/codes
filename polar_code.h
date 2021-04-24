@@ -12,7 +12,7 @@
 #include <vector>
 #include <array>
 
-//#define LLR
+#define LLR
 
 class PolarCode {
 public:
