@@ -579,7 +579,7 @@ std::vector<std::vector<double>> get_bler_quick(int n, int info_size, double des
     std::vector<PolarCode> codes;
     for (auto x : list_size_vec) {
         codes.push_back(PolarCode(n, info_size, design_epsilon));
-        //codes.back().InitInnerTrellisDecoder();
+        codes.back().InitInnerTrellisDecoder();
     }
     int block_size = 1 << n;
     int max_err = 1000;
@@ -679,7 +679,7 @@ void run_get_bler() {
 }
 
 int main() {
-    //run_get_bler();
+    run_get_bler();
     //for (int snr_db_10 = -10; snr_db_10 <= 40; snr_db_10 += 5) {
     //    AWGNChannel channel = AWGNChannelFromSNR(snr_db_10 / 10.);
     //    std::cout << snr_db_10 / 10. << ": " << channel.sigma() << "\n";

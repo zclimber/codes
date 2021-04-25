@@ -131,6 +131,15 @@ T stack_pop(std::vector<T>& stack) {
     return res;
 }
 
+inline double QFunc(double a, double b) {
+    int sign_lambda_a_b = (a < 0) == (b < 0) ? 1 : -1;
+    return sign_lambda_a_b * std::min(std::abs(a), std::abs(b));
+}
+
+inline double PFunc(double a, double b, int bit) {
+    return (1 - 2 * bit) * a + b;
+}
+
 double CalcMetric(double value, uint8_t bit) {
     if (bit == 0 && value < 0)
         return value;
@@ -138,6 +147,24 @@ double CalcMetric(double value, uint8_t bit) {
         return -value;
     else
         return 0;
+}
+
+double EllipsoidalWeight(const uint8_t* sym, const double* llrs, int length) {
+    uint8_t sym_1[16];
+    double mod_llrs_1[16];
+    double mod_llrs_2[16];
+    if (length == 1) {
+        return CalcMetric(*llrs, *sym);
+    }
+    else {
+        int length_2 = length / 2;
+        for (int i = 0; i < length_2; i++) {
+            sym_1[i] = sym[i] ^ sym[i + length_2];
+            mod_llrs_1[i] = QFunc(llrs[i], llrs[i + length_2]);
+            mod_llrs_2[i] = PFunc(llrs[i], llrs[i + length_2], sym_1[i]);
+        }
+        return EllipsoidalWeight(sym_1, mod_llrs_1, length_2) + EllipsoidalWeight(sym + length_2, mod_llrs_2, length_2);
+    }
 }
 
 thread_local std::vector<uint8_t> bit_reverse_temp_;
@@ -347,6 +374,10 @@ void PolarCode::DecodeSCL(std::vector<uint8_t>& codeword) {
             continuePaths_FrozenBit(phi);
         else
             continuePaths_UnfrozenBit(phi);
+
+        if (inner_decoder_ && (phi + 1) % (1 << trellis_n_) == 0) {
+            continuePaths_Trellis(phi);
+        }
 
         if ((phi % 2) == 1)
             recursivelyUpdateC(n_pow_, phi);
@@ -570,7 +601,7 @@ void PolarCode::recursivelyCalcLLR(size_t lambda, size_t phi) {
     }
 
     if (inner_decoder_ && lambda < trellis_n_) {
-        return;
+        //return;
     }
 
     /// llr как log(p[0] / p[1])
@@ -587,13 +618,11 @@ void PolarCode::recursivelyCalcLLR(size_t lambda, size_t phi) {
                 //double upper = std::exp(llr_lambda_1[2 * beta] + llr_lambda_1[2 * beta + 1]) + 1;
                 //double lower = std::exp(llr_lambda_1[2 * beta]) + std::exp(llr_lambda_1[2 * beta + 1]);
                 //llr_lambda[beta] = std::log(upper / lower);
-                int sign_lambda_a_b = (llr_lambda_1[2 * beta] < 0) == (llr_lambda_1[2 * beta + 1] < 0) ? 1 : -1;
-                llr_lambda[beta] = sign_lambda_a_b * std::min(std::abs(llr_lambda_1[2 * beta]), std::abs(llr_lambda_1[2 * beta + 1]));
+                llr_lambda[beta] = QFunc(llr_lambda_1[2 * beta], llr_lambda_1[2 * beta + 1]);
             }
             else {
                 auto& c_lambda = getArrayPointer_C(lambda, l);
-                auto u_p = c_lambda[beta][0];
-                llr_lambda[beta] = (1 - 2 * u_p) * llr_lambda_1[2 * beta] + llr_lambda_1[2 * beta + 1];
+                llr_lambda[beta] = PFunc(llr_lambda_1[2 * beta], llr_lambda_1[2 * beta + 1], c_lambda[beta][0]);
             }
 
         }
@@ -744,18 +773,24 @@ void PolarCode::continuePaths_UnfrozenBit(size_t phi) {
 
 void PolarCode::continuePaths_Trellis(size_t phi) {
     auto& current_trellis = trellis_decoders_[phi >> trellis_n_];
+    if (!current_trellis) {
+        return;
+    }
+    auto start = (phi >> trellis_n_) << trellis_n_;
     std::vector<float> calc_words(1 << trellis_n_);
-    std::vector<uint8_t> deduced_items;
+    std::vector<uint8_t> decoded_bits, deduced_bits;
+    std::vector<uint8_t> obtained_padded_bits;
     for (int l = 0; l < list_size_; l++) {
+        deduced_bits.assign(deduced_padded_bits_[l].begin() + start, deduced_padded_bits_[l].begin() + phi + 1);
         auto& llrs = getArrayPointer_LLR(n_pow_ - trellis_n_, l);
         for (int i = 0; i < (1 << trellis_n_); i++) {
             calc_words[i] = -llrs[i];
         }
-        current_trellis->DecodeInputToCodeword(calc_words, deduced_items);
+        current_trellis->DecodeInputToCodeword(calc_words, decoded_bits);
         
-        auto start = (phi >> trellis_n_) << trellis_n_;
+        double weight = EllipsoidalWeight(decoded_bits.data(), llrs.data(), decoded_bits.size());
         for (int i = start; i <= phi; i++) {
-            deduced_padded_bits_[l][i] = deduced_items[i - start];
+            //deduced_padded_bits_[l][i] = deduced_items[i - start];
         }
     }
 }
