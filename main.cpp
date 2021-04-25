@@ -679,12 +679,12 @@ void run_get_bler() {
 }
 
 int main() {
-    run_get_bler();
+    //run_get_bler();
     //for (int snr_db_10 = -10; snr_db_10 <= 40; snr_db_10 += 5) {
     //    AWGNChannel channel = AWGNChannelFromSNR(snr_db_10 / 10.);
     //    std::cout << snr_db_10 / 10. << ": " << channel.sigma() << "\n";
     //}
-    return 0;
+    //return 0;
 
     int mini_info = 5;
     std::vector<unsigned char> info(8), coded;
@@ -727,7 +727,7 @@ int main() {
             std::cout << iter << "\n";
         }
         for (auto& bit : in) {
-            bit = gen() % 2;
+            bit = 0;
         }
         code.Encode(in, codeword);
         AWGNChannel channel = AWGNChannelFromSNR(1.);
